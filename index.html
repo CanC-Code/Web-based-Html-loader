@@ -4,26 +4,46 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Program Loader</title>
+<style>
+body { font-family: Arial,sans-serif; background: #0d1117; color:#c9d1d9; display:flex; flex-direction:column; align-items:center; padding:1em;}
+h1 { margin-bottom:1em; color:#58a6ff;}
+</style>
 </head>
 <body>
+
 <h1>Load Local HTML Program</h1>
 <input type="file" id="fileInput" accept=".html">
+<div id="programContainer" style="width:100%; max-width:1000px; margin-top:1em;"></div>
+
 <script>
 const fileInput = document.getElementById('fileInput');
+const container = document.getElementById('programContainer');
 
 fileInput.addEventListener('change', e => {
   const file = e.target.files[0];
     if (!file) return;
-      
-        const reader = new FileReader();
-          reader.onload = () => {
-              // Open the HTML content in a new tab
-                  const newWindow = window.open();
-                      newWindow.document.write(reader.result);
-                          newWindow.document.close();
-                            };
-                              reader.readAsText(file);
-                              });
-                              </script>
-                              </body>
-                              </html>
+
+      const reader = new FileReader();
+        reader.onload = () => {
+            // Replace current container content with loaded HTML
+                container.innerHTML = reader.result;
+
+                    // Optionally run scripts inside the loaded HTML
+                        const scripts = container.querySelectorAll('script');
+                            scripts.forEach(oldScript => {
+                                  const newScript = document.createElement('script');
+                                        if(oldScript.src) {
+                                                newScript.src = oldScript.src;
+                                                        newScript.type = oldScript.type || 'text/javascript';
+                                                              } else {
+                                                                      newScript.textContent = oldScript.textContent;
+                                                                            }
+                                                                                  oldScript.parentNode.replaceChild(newScript, oldScript);
+                                                                                      });
+                                                                                        };
+                                                                                          reader.readAsText(file);
+                                                                                          });
+                                                                                          </script>
+
+                                                                                          </body>
+                                                                                          </html>
