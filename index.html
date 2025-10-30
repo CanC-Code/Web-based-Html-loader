@@ -3,110 +3,102 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GitHub HTML Loader</title>
+<title>Local HTML Loader</title>
 <style>
   body {
-      background: #0d1117;
-          color: #c9d1d9;
-              font-family: Arial, sans-serif;
-                  display: flex;
-                      flex-direction: column;
-                          align-items: center;
-                              padding: 2em;
-                                }
-                                  h1 {
-                                      color: #58a6ff;
-                                          margin-bottom: 1em;
-                                            }
-                                              #fileList {
-                                                  margin: 1em 0;
-                                                      background: #161b22;
-                                                          padding: 1em;
-                                                              border-radius: 10px;
-                                                                  width: 100%;
-                                                                      max-width: 600px;
-                                                                        }
-                                                                          .file-item {
-                                                                              padding: 10px;
-                                                                                  border-bottom: 1px solid #30363d;
-                                                                                      cursor: pointer;
-                                                                                          color: #c9d1d9;
-                                                                                            }
-                                                                                              .file-item:hover {
-                                                                                                  background: #21262d;
-                                                                                                    }
-                                                                                                      iframe {
-                                                                                                          width: 100%;
-                                                                                                              max-width: 900px;
-                                                                                                                  height: 75vh;
-                                                                                                                      border: 2px solid #30363d;
-                                                                                                                          border-radius: 12px;
-                                                                                                                              margin-top: 1.5em;
-                                                                                                                                  background: #000;
-                                                                                                                                    }
-                                                                                                                                      #status {
-                                                                                                                                          color: #8b949e;
-                                                                                                                                              margin-top: 1em;
-                                                                                                                                                  font-size: 0.9rem;
-                                                                                                                                                    }
-                                                                                                                                                    </style>
-                                                                                                                                                    </head>
-                                                                                                                                                    <body>
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2em;
+  }
+  h1 {
+    color: #58a6ff;
+    margin-bottom: 1em;
+  }
+  #fileList {
+    margin: 1em 0;
+    background: #161b22;
+    padding: 1em;
+    border-radius: 10px;
+    width: 100%;
+    max-width: 600px;
+  }
+  .file-item {
+    padding: 10px;
+    border-bottom: 1px solid #30363d;
+    cursor: pointer;
+    color: #c9d1d9;
+  }
+  .file-item:hover {
+    background: #21262d;
+  }
+  iframe {
+    width: 100%;
+    max-width: 900px;
+    height: 75vh;
+    border: 2px solid #30363d;
+    border-radius: 12px;
+    margin-top: 1.5em;
+    background: #000;
+  }
+  #status {
+    color: #8b949e;
+    margin-top: 1em;
+    font-size: 0.9rem;
+  }
+</style>
+</head>
+<body>
 
-                                                                                                                                                    <h1>Program Loader</h1>
-                                                                                                                                                    <p>Select a hosted HTML program from <code>/web_files/</code> below:</p>
+<h1>Local Program Loader</h1>
+<p>Select an HTML program from the <code>/web_files/</code> folder:</p>
 
-                                                                                                                                                    <div id="fileList">Loading available programs...</div>
+<div id="fileList">Loading available programs...</div>
 
-                                                                                                                                                    <iframe id="programFrame"></iframe>
+<iframe id="programFrame"></iframe>
 
-                                                                                                                                                    <div id="status">Ready.</div>
+<div id="status">Ready.</div>
 
-                                                                                                                                                    <script>
-                                                                                                                                                    const fileList = document.getElementById('fileList');
-                                                                                                                                                    const frame = document.getElementById('programFrame');
-                                                                                                                                                    const status = document.getElementById('status');
+<script>
+const fileList = document.getElementById('fileList');
+const frame = document.getElementById('programFrame');
+const status = document.getElementById('status');
 
-                                                                                                                                                    // Fetch list of available HTML files from GitHub directory
-                                                                                                                                                    async function loadFileList() {
-                                                                                                                                                      try {
-                                                                                                                                                          const repoUser = "<YOUR_GITHUB_USERNAME>";   // ← replace this
-                                                                                                                                                              const repoName = "<YOUR_REPO_NAME>";         // ← replace this
-                                                                                                                                                                  const apiUrl = `https://api.github.com/repos/${repoUser}/${repoName}/contents/web_files`;
+// ⚙️ Manually define which files exist inside /web_files/
+// (since local GitHub Pages can’t auto-list directories)
+const availableFiles = [
+  "video_layer.html"
+  // add more HTML files here if needed
+];
 
-                                                                                                                                                                      const res = await fetch(apiUrl);
-                                                                                                                                                                          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                                                                                                                                                                              const files = await res.json();
+// Populate the list dynamically
+function loadFileList() {
+  fileList.innerHTML = "";
+  if (availableFiles.length === 0) {
+    fileList.innerHTML = "<p>No programs found in /web_files.</p>";
+    return;
+  }
+  availableFiles.forEach(name => {
+    const div = document.createElement("div");
+    div.className = "file-item";
+    div.textContent = name;
+    div.onclick = () => loadProgram(name);
+    fileList.appendChild(div);
+  });
+  status.textContent = "Program list ready.";
+}
 
-                                                                                                                                                                                  const htmlFiles = files.filter(f => f.name.endsWith(".html"));
-                                                                                                                                                                                      if (htmlFiles.length === 0) {
-                                                                                                                                                                                            fileList.innerHTML = "<p>No HTML programs found in /web_files.</p>";
-                                                                                                                                                                                                  return;
-                                                                                                                                                                                                      }
+// Load selected file into the iframe
+function loadProgram(filename) {
+  frame.src = `web_files/${filename}`;
+  status.textContent = `Loaded: ${filename}`;
+}
 
-                                                                                                                                                                                                          fileList.innerHTML = "";
-                                                                                                                                                                                                              htmlFiles.forEach(f => {
-                                                                                                                                                                                                                    const div = document.createElement("div");
-                                                                                                                                                                                                                          div.className = "file-item";
-                                                                                                                                                                                                                                div.textContent = f.name;
-                                                                                                                                                                                                                                      div.onclick = () => loadProgram(f.name);
-                                                                                                                                                                                                                                            fileList.appendChild(div);
-                                                                                                                                                                                                                                                });
-                                                                                                                                                                                                                                                  } catch (err) {
-                                                                                                                                                                                                                                                      console.error(err);
-                                                                                                                                                                                                                                                          fileList.innerHTML = "<p>⚠️ Failed to fetch /web_files list.</p>";
-                                                                                                                                                                                                                                                            }
-                                                                                                                                                                                                                                                            }
+loadFileList();
+</script>
 
-                                                                                                                                                                                                                                                            // Load selected HTML program into iframe
-                                                                                                                                                                                                                                                            function loadProgram(filename) {
-                                                                                                                                                                                                                                                              const url = `web_files/${filename}`;
-                                                                                                                                                                                                                                                                frame.src = url;
-                                                                                                                                                                                                                                                                  status.textContent = `Loaded: ${filename}`;
-                                                                                                                                                                                                                                                                  }
-
-                                                                                                                                                                                                                                                                  loadFileList();
-                                                                                                                                                                                                                                                                  </script>
-
-                                                                                                                                                                                                                                                                  </body>
-                                                                                                                                                                                                                                                                  </html>
+</body>
+</html>
