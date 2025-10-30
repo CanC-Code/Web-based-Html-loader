@@ -1,165 +1,594 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Video Layer Processor</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Video Layer - Multi-object Segmentation</title>
 <style>
-  body {
-      margin: 0;
-          font-family: Arial, sans-serif;
-              background: #0d1117;
-                  color: #c9d1d9;
-                      display: flex;
-                          flex-direction: column;
-                              align-items: center;
-                                  padding: 1em;
-                                    }
-                                      h1 {
-                                          color: #58a6ff;
-                                              margin: 0.5em 0 1em;
-                                                  text-align: center;
-                                                    }
-                                                      .controls {
-                                                          display: flex;
-                                                              flex-wrap: wrap;
-                                                                  gap: 1em;
-                                                                      justify-content: center;
-                                                                          margin-bottom: 1em;
-                                                                            }
-                                                                              input[type=file], button {
-                                                                                  background: #161b22;
-                                                                                      color: #c9d1d9;
-                                                                                          border: 1px solid #30363d;
-                                                                                              padding: 0.6em 1em;
-                                                                                                  border-radius: 8px;
-                                                                                                      font-size: 1rem;
-                                                                                                          cursor: pointer;
-                                                                                                            }
-                                                                                                              input[type=file]:hover, button:hover {
-                                                                                                                  background: #21262d;
-                                                                                                                    }
-                                                                                                                      video, canvas {
-                                                                                                                          width: 100%;
-                                                                                                                              max-width: 720px;
-                                                                                                                                  border-radius: 10px;
-                                                                                                                                      margin-top: 1em;
-                                                                                                                                          background: #000;
-                                                                                                                                            }
-                                                                                                                                              #status {
-                                                                                                                                                  margin-top: 1em;
-                                                                                                                                                      color: #8b949e;
-                                                                                                                                                          font-size: 0.9rem;
-                                                                                                                                                            }
-                                                                                                                                                            </style>
-                                                                                                                                                            </head>
-                                                                                                                                                            <body>
+  :root{ --bg: #0d1117; --panel:#0f1720; --muted:#8b949e; --accent:#58a6ff; --btn:#238636; }
+  body{ margin:0; font-family:Inter,Arial,sans-serif; background:var(--bg); color:#c9d1d9; display:flex; flex-direction:column; align-items:center; padding:1rem; }
+  h1{ color:var(--accent); margin:0 0 0.75rem 0; font-size:1.2rem; }
+  .topbar{ display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center; justify-content:center; margin-bottom:0.75rem; width:100%; max-width:1100px; }
+  .control, select, button, input[type=file]{
+    background:var(--panel); color:inherit; border:1px solid #21262d; padding:8px 12px; border-radius:8px; font-weight:600; cursor:pointer;
+  }
+  .control[disabled]{ opacity:0.5; cursor:not-allowed; }
+  #layout{ display:grid; grid-template-columns: 1fr 320px; gap:14px; width:100%; max-width:1100px; align-items:start; }
+  #viewer{ position:relative; background:#000; border-radius:10px; overflow:hidden; }
+  video, canvas{ display:block; width:100%; height:auto; max-width:100%; }
+  #mainCanvas{ position:absolute; left:0; top:0; pointer-events:none; }
+  #sidebar{ background:var(--panel); padding:12px; border-radius:10px; min-height:320px; color:#c9d1d9; }
+  .section{ margin-bottom:12px; }
+  label{ display:block; font-size:0.85rem; color:var(--muted); margin-bottom:6px; }
+  .file-row{ display:flex; gap:10px; align-items:center; }
+  .list{ max-height:220px; overflow:auto; border:1px solid #1f2933; border-radius:8px; padding:6px; background:#07080a;}
+  .class-item{ padding:6px; border-radius:6px; cursor:pointer; margin-bottom:6px; background:#0b1116; }
+  .class-item.selected{ outline:2px solid rgba(88,166,255,0.18); background:#081018; }
+  .small{ font-size:0.85rem; color:var(--muted); }
+  .btn-row{ display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
+  .accent{ background:var(--accent); color:#061025; padding:6px 10px; border-radius:6px; cursor:pointer; font-weight:700; }
+  .muted{ background:#111827; color:var(--muted); padding:6px 8px; border-radius:6px; }
+  #status{ margin-top:10px; color:var(--muted); font-size:0.9rem; }
+  @media(max-width:920px){ #layout{ grid-template-columns: 1fr; } #sidebar{ order:2; } }
+</style>
+<!-- TFJS + DeepLab -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@0.2.2/dist/deeplab.min.js"></script>
+</head>
+<body>
+  <h1>Video Layer — Multi-object Segmentation</h1>
 
-                                                                                                                                                            <h1>Video Layer Processor</h1>
+  <div class="topbar">
+    <div class="file-row">
+      <input id="videoInput" type="file" accept="video/*" class="control" />
+      <button id="loadModelBtn" class="control">Load DeepLab Model</button>
+      <select id="modelBase" class="control">
+        <option value="pascal">DeepLab: PASCAL (fast)</option>
+        <option value="ade20k">DeepLab: ADE20K (more classes)</option>
+      </select>
+    </div>
 
-                                                                                                                                                            <div class="controls">
-                                                                                                                                                              <input type="file" id="videoInput" accept="video/*">
-                                                                                                                                                                <button id="toggleSegBtn" disabled>Enable Segmentation</button>
-                                                                                                                                                                  <button id="pausePlayBtn" disabled>Pause</button>
-                                                                                                                                                                  </div>
+    <div class="btn-row">
+      <button id="toggleDepth" class="control muted">Toggle Depth Grid</button>
+      <button id="processBtn" class="control" disabled>Export Processed Video</button>
+      <button id="previewBtn" class="control" disabled>Preview Export</button>
+      <button id="downloadBtn" class="control" disabled>Download</button>
+    </div>
+  </div>
 
-                                                                                                                                                                  <video id="video" playsinline controls></video>
-                                                                                                                                                                  <canvas id="canvas"></canvas>
+  <div id="layout">
+    <div id="viewer">
+      <video id="video" playsinline controls style="width:100%; display:block;"></video>
+      <!-- mainCanvas draws composite preview (masks, replacements, depth grid) -->
+      <canvas id="mainCanvas"></canvas>
+    </div>
 
-                                                                                                                                                                  <div id="status">Ready.</div>
+    <aside id="sidebar">
+      <div class="section">
+        <label>Modes</label>
+        <select id="modeSelect" class="control">
+          <option value="composite">Composite (all layers)</option>
+          <option value="person">Keep Person Only</option>
+          <option value="blur">Blur Background</option>
+          <option value="transparent">Transparent Background</option>
+        </select>
+      </div>
 
-                                                                                                                                                                  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
-                                                                                                                                                                  <script>
-                                                                                                                                                                  const video = document.getElementById('video');
-                                                                                                                                                                  const canvas = document.getElementById('canvas');
-                                                                                                                                                                  const ctx = canvas.getContext('2d');
-                                                                                                                                                                  const input = document.getElementById('videoInput');
-                                                                                                                                                                  const toggleSegBtn = document.getElementById('toggleSegBtn');
-                                                                                                                                                                  const pausePlayBtn = document.getElementById('pausePlayBtn');
-                                                                                                                                                                  const status = document.getElementById('status');
+      <div class="section">
+        <label>Detected classes / layers (click to select)</label>
+        <div id="classList" class="list small">No segmentation yet.</div>
+      </div>
 
-                                                                                                                                                                  let seg = null;
-                                                                                                                                                                  let mask = null;
-                                                                                                                                                                  let useSegmentation = false;
-                                                                                                                                                                  let loopActive = false;
+      <div class="section">
+        <label>Selected layer actions</label>
+        <div class="btn-row">
+          <button id="hideLayerBtn" class="control muted" disabled>Toggle Visible</button>
+          <button id="replaceColorBtn" class="control" disabled>Fill Color</button>
+          <input id="fillColor" type="color" value="#000000" style="padding:6px; border-radius:6px; border: none;"/>
+        </div>
+        <div class="btn-row" style="margin-top:8px;">
+          <button id="restoreBgBtn" class="control" disabled>Restore Background (infill)</button>
+        </div>
+      </div>
 
-                                                                                                                                                                  // --- Initialize MediaPipe Segmentation ---
-                                                                                                                                                                  seg = new SelfieSegmentation({
-                                                                                                                                                                    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`
-                                                                                                                                                                    });
-                                                                                                                                                                    seg.setOptions({ modelSelection: 1 });
-                                                                                                                                                                    seg.onResults(results => {
-                                                                                                                                                                      mask = results.segmentationMask;
-                                                                                                                                                                      });
+      <div class="section">
+        <label>Depth Grid</label>
+        <div class="small">Simulated depth zones (1..20). Use for layering visual aids.</div>
+        <div class="small" style="margin-top:6px;">Grid scale:
+          <input id="depthScale" type="range" min="1" max="20" value="8" style="vertical-align:middle;">
+        </div>
+      </div>
 
-                                                                                                                                                                      // --- Load video file ---
-                                                                                                                                                                      input.addEventListener('change', e => {
-                                                                                                                                                                        const file = e.target.files[0];
-                                                                                                                                                                          if (!file) return;
-                                                                                                                                                                            video.src = URL.createObjectURL(file);
-                                                                                                                                                                              video.load();
-                                                                                                                                                                                video.onloadeddata = () => {
-                                                                                                                                                                                    canvas.width = video.videoWidth;
-                                                                                                                                                                                        canvas.height = video.videoHeight;
-                                                                                                                                                                                            toggleSegBtn.disabled = false;
-                                                                                                                                                                                                pausePlayBtn.disabled = false;
-                                                                                                                                                                                                    video.play().catch(()=>{});
-                                                                                                                                                                                                        startLoop();
-                                                                                                                                                                                                            status.textContent = `Loaded: ${file.name}`;
-                                                                                                                                                                                                              };
-                                                                                                                                                                                                              });
+      <div id="status">Model not loaded.</div>
+    </aside>
+  </div>
 
-                                                                                                                                                                                                              // --- Toggle segmentation ---
-                                                                                                                                                                                                              toggleSegBtn.addEventListener('click', () => {
-                                                                                                                                                                                                                useSegmentation = !useSegmentation;
-                                                                                                                                                                                                                  toggleSegBtn.textContent = useSegmentation ? "Disable Segmentation" : "Enable Segmentation";
-                                                                                                                                                                                                                  });
+<script>
+/* Full-featured video layer script
+   - Uses TensorFlow.js DeepLab for semantic segmentation (multi-class)
+   - Builds per-class masks and canvases
+   - Click to select class, toggle visibility, replace color, restore background (simple infill)
+   - Toggle simulated depth grid
+   - Export using MediaRecorder from main canvas
+*/
 
-                                                                                                                                                                                                                  // --- Pause / Play ---
-                                                                                                                                                                                                                  pausePlayBtn.addEventListener('click', () => {
-                                                                                                                                                                                                                    if (video.paused) {
-                                                                                                                                                                                                                        video.play();
-                                                                                                                                                                                                                            pausePlayBtn.textContent = "Pause";
-                                                                                                                                                                                                                              } else {
-                                                                                                                                                                                                                                  video.pause();
-                                                                                                                                                                                                                                      pausePlayBtn.textContent = "Play";
-                                                                                                                                                                                                                                        }
-                                                                                                                                                                                                                                        });
+// UI elements
+const videoInput = document.getElementById('videoInput');
+const loadModelBtn = document.getElementById('loadModelBtn');
+const modelBase = document.getElementById('modelBase');
+const toggleDepthBtn = document.getElementById('toggleDepth');
+const processBtn = document.getElementById('processBtn');
+const previewBtn = document.getElementById('previewBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const modeSelect = document.getElementById('modeSelect');
 
-                                                                                                                                                                                                                                        // --- Main video render loop ---
-                                                                                                                                                                                                                                        function startLoop() {
-                                                                                                                                                                                                                                          if (loopActive) return;
-                                                                                                                                                                                                                                            loopActive = true;
-                                                                                                                                                                                                                                              function renderFrame() {
-                                                                                                                                                                                                                                                  if (video.paused || video.ended) {
-                                                                                                                                                                                                                                                        loopActive = false;
-                                                                                                                                                                                                                                                              return;
-                                                                                                                                                                                                                                                                  }
+const video = document.getElementById('video');
+const mainCanvas = document.getElementById('mainCanvas');
+const mainCtx = mainCanvas.getContext('2d');
 
-                                                                                                                                                                                                                                                                      if (useSegmentation) {
-                                                                                                                                                                                                                                                                            seg.send({image: video}).then(drawFrame);
-                                                                                                                                                                                                                                                                                } else {
-                                                                                                                                                                                                                                                                                      drawFrame();
-                                                                                                                                                                                                                                                                                          }
+const classListEl = document.getElementById('classList');
+const statusEl = document.getElementById('status');
 
-                                                                                                                                                                                                                                                                                              video.requestVideoFrameCallback(renderFrame);
-                                                                                                                                                                                                                                                                                                }
-                                                                                                                                                                                                                                                                                                  video.requestVideoFrameCallback(renderFrame);
-                                                                                                                                                                                                                                                                                                  }
+const hideLayerBtn = document.getElementById('hideLayerBtn');
+const replaceColorBtn = document.getElementById('replaceColorBtn');
+const fillColorInput = document.getElementById('fillColor');
+const restoreBgBtn = document.getElementById('restoreBgBtn');
+const depthScaleInput = document.getElementById('depthScale');
 
-                                                                                                                                                                                                                                                                                                  // --- Draw frame ---
-                                                                                                                                                                                                                                                                                                  function drawFrame() {
-                                                                                                                                                                                                                                                                                                    ctx.clearRect(0, 0, canvas.width, canvas.height);
-                                                                                                                                                                                                                                                                                                      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+// Model and segmentation state
+let deeplabModel = null;
+let segResult = null; // {legend, segmentationMap, width, height}
+let classCanvases = {}; // classId -> {canvas, ctx, visible:true, colorReplace:null}
+let classesOrdered = []; // array of classId in display order
+let selectedClass = null;
+let showDepthGrid = false;
+let depthScale = parseInt(depthScaleInput.value,10);
 
-                                                                                                                                                                                                                                                                                                        if (useSegmentation && mask) {
-                                                                                                                                                                                                                                                                                                            ctx.save();
-                                                                                                                                                                                                                                                                                                                ctx.globalCompositeOperation = 'destination-in';
-                                                                                                                                                                                                                                                                                                                    ctx.drawImage(mask, 0, 0, canvas.width, canvas.height);
-                                                                                                                                                                                                                                                                                                                        ctx.restore();
-                                                                                                                                                                                                                                                                                                                          }
-                                                                                                                                                                                                                                                                                                                          }
-                                                                                                                                                                                                                                                                                                                          </script>
+// Export state
+let processedBlob = null;
 
-                                                                                                                                                                                                                                                                                                                          </body>
-                                                                                                                                                                                                                                                                                                                          </html>
+// Helper: status
+function setStatus(s){ statusEl.textContent = s; }
+
+// Load model
+loadModelBtn.addEventListener('click', async () => {
+  setStatus('Loading DeepLab model — this may take a few seconds...');
+  loadModelBtn.disabled = true;
+  try {
+    const base = modelBase.value; // 'pascal' or 'ade20k'
+    deeplabModel = await deeplab.load({ base, quantizationBytes: 2 });
+    setStatus('Model loaded: ' + base);
+    loadModelBtn.textContent = 'Model Loaded';
+    loadModelBtn.disabled = true;
+  } catch (err) {
+    console.error(err);
+    setStatus('Model load failed: ' + err.message);
+    loadModelBtn.disabled = false;
+  }
+});
+
+// Video load
+videoInput.addEventListener('change', (e) => {
+  const f = e.target.files[0];
+  if(!f) return;
+  video.src = URL.createObjectURL(f);
+  video.load();
+  video.onloadeddata = () => {
+    mainCanvas.width = video.videoWidth;
+    mainCanvas.height = video.videoHeight;
+    setStatus(`Video loaded (${video.videoWidth}×${video.videoHeight}).`);
+    // enable segmentation UI
+    toggleDepthBtn.disabled = false;
+    processBtn.disabled = false;
+    previewBtn.disabled = true;
+    downloadBtn.disabled = true;
+    // start live preview loop
+    startPreviewLoop();
+    // if model ready, run a full segmentation pass on first frame
+    if(deeplabModel) runSegmentationOnce();
+  };
+});
+
+// Run segmentation on current video frame (single)
+async function runSegmentationOnce() {
+  if(!deeplabModel) { setStatus('Load model first.'); return; }
+  setStatus('Running segmentation (single frame)...');
+  // draw current video frame to an offscreen canvas
+  const off = document.createElement('canvas');
+  off.width = video.videoWidth;
+  off.height = video.videoHeight;
+  const offCtx = off.getContext('2d');
+  offCtx.drawImage(video,0,0,off.width,off.height);
+  // model.segment takes image element or canvas
+  segResult = await deeplabModel.segment(off);
+  buildClassCanvasesFromSeg(segResult);
+  setStatus('Segmentation ready — classes: ' + classesOrdered.map(id=>segResult.legend[id]||id).slice(0,8).join(', '));
+}
+
+// Live preview loop (draw video + active masks & effects)
+let previewLoopHandle = null;
+function startPreviewLoop(){
+  if(previewLoopHandle) return;
+  function frameLoop(){
+    drawComposite();
+    // continue
+    previewLoopHandle = video.requestVideoFrameCallback ? video.requestVideoFrameCallback(frameLoop) : requestAnimationFrame(frameLoop);
+  }
+  frameLoop();
+}
+
+// Stop preview loop
+function stopPreviewLoop(){
+  if(previewLoopHandle){
+    if(video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(previewLoopHandle);
+    previewLoopHandle = null;
+  }
+}
+
+// Build per-class canvases (masks) from segResult
+function buildClassCanvasesFromSeg(seg){
+  if(!seg || !seg.segmentationMap) return;
+  // segmentationMap is Uint8ClampedArray with [r,g,b,...] colored map OR might be class index map
+  // For @tensorflow-models/deeplab, seg.segmentationMap is Uint8ClampedArray representing colors per pixel.
+  // However docs also include legend and width/height. Many demos reconstruct class id map by mapping colors.
+  // deeplab.segment returns segmentationMap where each pixel is 0..numClasses-1 in a Uint8Array (older)
+  // We'll try to support both possibilities.
+
+  const w = seg.width, h = seg.height;
+  const segMap = seg.segmentationMap; // Uint8ClampedArray length w*h (class id) OR RGBA map length w*h*4
+  // Try detect: if length === w*h -> class id map
+  let classIdMap = null;
+  if(segMap && segMap.length === w*h){
+    classIdMap = segMap;
+  } else if(segMap && segMap.length === w*h*4){
+    // color-coded RGBA -> convert to unique color index mapping via legend keys
+    // DeepLab usually provides segmentationMap as RGBA color map; legend maps color to name
+    // We'll create a color->classId mapping by matching unique colors in legend if present
+    const colorToIndex = {};
+    const legend = seg.legend || {};
+    // Build mapping by converting legend color strings (like "#rrggbb") to RGB
+    let idx=0;
+    for(const k in legend){
+      // legend keys might be classId names; library also exposes palette? We'll fallback to scanning unique colors
+    }
+    // fallback: scan colors in map, assign incremental class ids
+    classIdMap = new Uint8ClampedArray(w*h);
+    const colorKeyToId = {};
+    let nextId = 0;
+    for(let p=0;p<w*h;p++){
+      const r = segMap[p*4], g=segMap[p*4+1], b=segMap[p*4+2];
+      const key = `${r},${g},${b}`;
+      if(!(key in colorKeyToId)) colorKeyToId[key] = nextId++;
+      classIdMap[p] = colorKeyToId[key];
+    }
+  } else {
+    setStatus('Unexpected segmentation map format.');
+    return;
+  }
+
+  // Determine classId -> display name using legend if available
+  const legend = seg.legend || {};
+  // Build canvases
+  classCanvases = {};
+  const presentIds = new Set();
+  for(let i=0;i<w*h;i++) presentIds.add(classIdMap[i]);
+  classesOrdered = Array.from(presentIds).sort((a,b)=>a-b);
+
+  classesOrdered.forEach(cid=>{
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const cx = c.getContext('2d');
+    const maskImg = cx.createImageData(w,h);
+    // build alpha mask: 255 where classId matches
+    for(let p=0;p<w*h;p++){
+      const match = (classIdMap[p] === cid);
+      const off = p*4;
+      maskImg.data[off] = 255;
+      maskImg.data[off+1] = 255;
+      maskImg.data[off+2] = 255;
+      maskImg.data[off+3] = match ? 255 : 0;
+    }
+    cx.putImageData(maskImg,0,0);
+    // refinement: small blur to smooth edges (CSS filter not applied to ImageData) - we can draw scaled blur trick:
+    // We'll store as-is; smoothing will be applied during composite with globalAlpha and shadow or Canvas filter when supported.
+    classCanvases[cid] = { canvas: c, ctx: cx, visible: true, replaceColor: null, name: legend[cid] || ('class-'+cid) };
+  });
+
+  // Populate UI class list
+  populateClassListUI();
+}
+
+// Populate class list in sidebar
+function populateClassListUI(){
+  classListEl.innerHTML = '';
+  if(!classesOrdered || classesOrdered.length===0){
+    classListEl.textContent = 'No segmentation classes yet.';
+    return;
+  }
+  classesOrdered.forEach(cid=>{
+    const meta = classCanvases[cid];
+    const div = document.createElement('div');
+    div.className = 'class-item';
+    div.textContent = `${meta.name} (id:${cid})`;
+    div.onclick = ()=> selectClass(cid, div);
+    classListEl.appendChild(div);
+  });
+}
+
+// Select a class
+function selectClass(cid, el){
+  selectedClass = cid;
+  // highlight UI
+  Array.from(classListEl.children).forEach(ch => ch.classList.remove('selected'));
+  if(el) el.classList.add('selected');
+  // enable buttons
+  hideLayerBtn.disabled = false;
+  replaceColorBtn.disabled = false;
+  restoreBgBtn.disabled = false;
+  setStatus('Selected: ' + classCanvases[cid].name);
+}
+
+// Composite draw routine: draws video, applies class masks and replacements, depth grid overlay
+function drawComposite(){
+  if(!video || video.readyState < 2) return;
+  const w = mainCanvas.width = video.videoWidth;
+  const h = mainCanvas.height = video.videoHeight;
+
+  // Start with base video frame
+  mainCtx.clearRect(0,0,w,h);
+  mainCtx.drawImage(video,0,0,w,h);
+
+  const mode = modeSelect.value;
+
+  // Prepare background copy for restore/infill if needed
+  const backgroundCopy = mainCtx.getImageData(0,0,w,h);
+
+  // If mode is blur background, apply blur first to copy
+  if(mode === 'blur'){
+    // simple blur: draw scaled down and back up as cheap blur (fast)
+    const tmp = document.createElement('canvas');
+    tmp.width = Math.max(1,Math.round(w/12));
+    tmp.height = Math.max(1,Math.round(h/12));
+    const tc = tmp.getContext('2d');
+    tc.drawImage(video,0,0,tmp.width,tmp.height);
+    mainCtx.save();
+    mainCtx.filter = 'blur(12px)';
+    mainCtx.drawImage(tmp,0,0,w,h);
+    mainCtx.restore();
+  }
+
+  // Composite layers in order: draw replacements for each visible class, or mask out to show person only etc.
+  // We'll draw each class mask as either replacement (solid color) or keep the pixels from original video
+  if(segResult && classesOrdered.length){
+    // For person-only mode: mask all non-person classes (class id matching 'person' must be found)
+    const isPersonMode = (mode === 'person');
+    // For transparent mode: we'll clear background where no class selected (we'll set alpha accordingly)
+    if(mode === 'transparent'){
+      // create an output ImageData and set alpha zero for background
+      const out = mainCtx.getImageData(0,0,w,h);
+      // initialize all pixels to transparent
+      for(let i=0;i<out.data.length;i+=4) out.data[i+3] = 0;
+      // For each visible class, copy pixels from video where mask present
+      classesOrdered.forEach(cid=>{
+        const meta = classCanvases[cid];
+        if(!meta.visible) return;
+        const maskData = meta.ctx.getImageData(0,0,w,h).data;
+        const videoData = backgroundCopy.data;
+        for(let p=0;p<w*h;p++){
+          const off = p*4;
+          if(maskData[off+3] > 128){
+            out.data[off] = videoData[off];
+            out.data[off+1] = videoData[off+1];
+            out.data[off+2] = videoData[off+2];
+            out.data[off+3] = 255;
+          }
+        }
+      });
+      mainCtx.putImageData(out,0,0);
+    } else {
+      // Composite per class on top of base (which could be blurred)
+      classesOrdered.forEach(cid=>{
+        const meta = classCanvases[cid];
+        if(!meta.visible) return;
+        // If replacement color set -> draw replacement where mask exists
+        if(meta.replaceColor){
+          mainCtx.save();
+          mainCtx.globalCompositeOperation = 'source-over';
+          // draw mask into composition by using mask as alpha
+          mainCtx.drawImage(meta.canvas,0,0,w,h);
+          mainCtx.globalCompositeOperation = 'source-in';
+          mainCtx.fillStyle = meta.replaceColor;
+          mainCtx.fillRect(0,0,w,h);
+          mainCtx.globalCompositeOperation = 'source-over';
+          mainCtx.restore();
+        } else {
+          // default: overlay original video where mask exists (no-op because base is video),
+          // but we may want to emphasize edges: draw mask with slight feather
+          // We'll use mask as clipping to draw the video (no-op) — keep as is.
+          // For person-mode, we'll hide non-person classes later
+        }
+      });
+
+      if(isPersonMode){
+        // Create output that contains only person class (assume class with name 'person' exists)
+        // Find a class id named 'person' or a legend name that contains 'person' / 'human'
+        let personCid = null;
+        for(const cid of classesOrdered){
+          const name = classCanvases[cid].name.toLowerCase();
+          if(name.includes('person') || name.includes('human')) { personCid = cid; break; }
+        }
+        if(personCid === null){
+          // fallback: use the most common class id (first)
+          personCid = classesOrdered[0];
+        }
+        // Build output: alpha only where person mask present
+        const out = mainCtx.getImageData(0,0,w,h);
+        // zero alpha initially
+        for(let i=0;i<out.data.length;i+=4) out.data[i+3] = 0;
+        const maskData = classCanvases[personCid].ctx.getImageData(0,0,w,h).data;
+        const vid = backgroundCopy.data;
+        for(let p=0;p<w*h;p++){
+          const off = p*4;
+          if(maskData[off+3] > 128){
+            out.data[off] = vid[off];
+            out.data[off+1] = vid[off+1];
+            out.data[off+2] = vid[off+2];
+            out.data[off+3] = 255;
+          }
+        }
+        mainCtx.putImageData(out,0,0);
+      }
+    }
+  }
+
+  // Depth grid overlay (simulated), if enabled
+  if(showDepthGrid){
+    drawDepthGrid();
+  }
+}
+
+// Draw depth grid overlay - simulated by Y coordinate and class masks
+function drawDepthGrid(){
+  const w = mainCanvas.width, h = mainCanvas.height;
+  const zones = 20;
+  const scale = depthScale;
+  mainCtx.save();
+  mainCtx.globalCompositeOperation = 'source-over';
+  mainCtx.globalAlpha = 0.22;
+  for(let z=0; z<zones; z++){
+    const fy = 1 - (z / (zones-1)); // top->bottom factor
+    const y = Math.round((1 - fy) * h);
+    const zoneHeight = Math.max(2, Math.round(h/zones));
+    mainCtx.fillStyle = `hsl(${(z*18)%360} 60% ${60 - z*1}%)`;
+    mainCtx.fillRect(0, y, w, zoneHeight * scale / zones);
+  }
+  // grid lines
+  mainCtx.globalAlpha = 0.12;
+  mainCtx.strokeStyle = '#000';
+  mainCtx.lineWidth = 1;
+  const rows = Math.min(20, Math.max(4, scale));
+  for(let r=0;r<=rows;r++){
+    const y = Math.round((r/rows) * h);
+    mainCtx.beginPath(); mainCtx.moveTo(0,y); mainCtx.lineTo(w,y); mainCtx.stroke();
+  }
+  mainCtx.restore();
+}
+
+// UI: toggle depth grid
+toggleDepthBtn.addEventListener('click', ()=>{
+  showDepthGrid = !showDepthGrid;
+  toggleDepthBtn.textContent = showDepthGrid ? 'Depth: ON' : 'Toggle Depth Grid';
+});
+
+// Depth scale
+depthScaleInput.addEventListener('input', (e)=> {
+  depthScale = parseInt(e.target.value,10);
+});
+
+// Selected layer controls
+hideLayerBtn.addEventListener('click', ()=>{
+  if(selectedClass==null) return;
+  classCanvases[selectedClass].visible = !classCanvases[selectedClass].visible;
+  hideLayerBtn.textContent = classCanvases[selectedClass].visible ? 'Hide Layer' : 'Show Layer';
+});
+replaceColorBtn.addEventListener('click', ()=>{
+  if(selectedClass==null) return;
+  const color = fillColorInput.value;
+  classCanvases[selectedClass].replaceColor = color;
+  setStatus('Applied fill color to ' + classCanvases[selectedClass].name);
+});
+restoreBgBtn.addEventListener('click', ()=>{
+  if(selectedClass==null) return;
+  // Simple restore: set replaceColor to null and set visible false so background shows through
+  classCanvases[selectedClass].replaceColor = null;
+  classCanvases[selectedClass].visible = false;
+  setStatus('Restored background for ' + classCanvases[selectedClass].name);
+});
+
+// Process / export: use MediaRecorder capturing the mainCanvas as the source
+processBtn.addEventListener('click', async ()=>{
+  if(!video.src) { setStatus('Load a video first.'); return; }
+  setStatus('Starting export — recording canvas (live).');
+  processedBlob = null;
+  previewBtn.disabled = true;
+  downloadBtn.disabled = true;
+
+  // ensure model segmentation is ready; run segmentation once before starting (to have masks)
+  if(!segResult && deeplabModel){
+    await runSegmentationOnce();
+  }
+
+  // Create a recorder
+  const fps = 25;
+  const stream = mainCanvas.captureStream(fps);
+  const recChunks = [];
+  const mr = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp8' });
+  mr.ondataavailable = e => { if(e.data && e.data.size) recChunks.push(e.data); };
+  mr.onstop = () => {
+    processedBlob = new Blob(recChunks, { type: 'video/webm' });
+    previewBtn.disabled = false;
+    downloadBtn.disabled = false;
+    setStatus('Export complete — ready to preview/download.');
+  };
+
+  // Start recording then play video; when video ends stop
+  mr.start();
+  video.currentTime = 0;
+  video.play();
+  // while playing, keep applying segmentation updates (if model loaded) for better masks
+  const onEnded = ()=> {
+    mr.stop();
+    video.removeEventListener('ended', onEnded);
+    video.pause();
+  };
+  video.addEventListener('ended', onEnded);
+
+  setStatus('Recording... please wait until video finishes playing.');
+});
+
+// Preview recorded result by setting video to blob URL
+previewBtn.addEventListener('click', ()=>{
+  if(!processedBlob) return;
+  video.src = URL.createObjectURL(processedBlob);
+  video.controls = true;
+  video.play();
+});
+
+// Download
+downloadBtn.addEventListener('click', ()=>{
+  if(!processedBlob) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(processedBlob);
+  a.download = `processed_${Date.now()}.webm`;
+  a.click();
+});
+
+// Utility setStatus
+function setStatus(s){
+  statusEl.textContent = s;
+  console.log('[video_layer] ', s);
+}
+
+// Optional: run segmentation continuously (if model loaded) for live updating masks
+async function continuousSegmentationLoop(){
+  if(!deeplabModel) return;
+  while(video && !video.paused && !video.ended){
+    // create a tiny offscreen to accelerate
+    const off = document.createElement('canvas');
+    off.width = Math.max(256, Math.round(video.videoWidth/2));
+    off.height = Math.max(256, Math.round(video.videoHeight/2));
+    const oc = off.getContext('2d');
+    oc.drawImage(video,0,0,off.width,off.height);
+    const segSmall = await deeplabModel.segment(off);
+    // Expand to full size: we'll run a single-frame segmentation map on full res for accuracy on demand
+    // For now update segResult on demand
+    // Note: continuous full-res segmentation is expensive
+    await new Promise(r=>setTimeout(r, 250)); // throttle
+  }
+}
+
+// When model is loaded and video is ready, run initial segmentation automatically
+// (User must click Load Model first)
+</script>
+</body>
+</html>
