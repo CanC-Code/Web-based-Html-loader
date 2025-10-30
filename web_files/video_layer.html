@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Video Layer Processor</title>
+<style>
+  body {
+      margin: 0;
+          font-family: Arial, sans-serif;
+              background: #0d1117;
+                  color: #c9d1d9;
+                      display: flex;
+                          flex-direction: column;
+                              align-items: center;
+                                  padding: 1em;
+                                    }
+                                      h1 {
+                                          color: #58a6ff;
+                                              margin: 0.5em 0 1em;
+                                                  text-align: center;
+                                                    }
+                                                      .controls {
+                                                          display: flex;
+                                                              flex-wrap: wrap;
+                                                                  gap: 1em;
+                                                                      justify-content: center;
+                                                                          margin-bottom: 1em;
+                                                                            }
+                                                                              input[type=file], button {
+                                                                                  background: #161b22;
+                                                                                      color: #c9d1d9;
+                                                                                          border: 1px solid #30363d;
+                                                                                              padding: 0.6em 1em;
+                                                                                                  border-radius: 8px;
+                                                                                                      font-size: 1rem;
+                                                                                                          cursor: pointer;
+                                                                                                            }
+                                                                                                              input[type=file]:hover, button:hover {
+                                                                                                                  background: #21262d;
+                                                                                                                    }
+                                                                                                                      video, canvas {
+                                                                                                                          width: 100%;
+                                                                                                                              max-width: 720px;
+                                                                                                                                  border-radius: 10px;
+                                                                                                                                      margin-top: 1em;
+                                                                                                                                          background: #000;
+                                                                                                                                            }
+                                                                                                                                              #status {
+                                                                                                                                                  margin-top: 1em;
+                                                                                                                                                      color: #8b949e;
+                                                                                                                                                          font-size: 0.9rem;
+                                                                                                                                                            }
+                                                                                                                                                            </style>
+                                                                                                                                                            </head>
+                                                                                                                                                            <body>
+
+                                                                                                                                                            <h1>Video Layer Processor</h1>
+
+                                                                                                                                                            <div class="controls">
+                                                                                                                                                              <input type="file" id="videoInput" accept="video/*">
+                                                                                                                                                                <button id="toggleSegBtn" disabled>Enable Segmentation</button>
+                                                                                                                                                                  <button id="pausePlayBtn" disabled>Pause</button>
+                                                                                                                                                                  </div>
+
+                                                                                                                                                                  <video id="video" playsinline controls></video>
+                                                                                                                                                                  <canvas id="canvas"></canvas>
+
+                                                                                                                                                                  <div id="status">Ready.</div>
+
+                                                                                                                                                                  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
+                                                                                                                                                                  <script>
+                                                                                                                                                                  const video = document.getElementById('video');
+                                                                                                                                                                  const canvas = document.getElementById('canvas');
+                                                                                                                                                                  const ctx = canvas.getContext('2d');
+                                                                                                                                                                  const input = document.getElementById('videoInput');
+                                                                                                                                                                  const toggleSegBtn = document.getElementById('toggleSegBtn');
+                                                                                                                                                                  const pausePlayBtn = document.getElementById('pausePlayBtn');
+                                                                                                                                                                  const status = document.getElementById('status');
+
+                                                                                                                                                                  let seg = null;
+                                                                                                                                                                  let mask = null;
+                                                                                                                                                                  let useSegmentation = false;
+                                                                                                                                                                  let loopActive = false;
+
+                                                                                                                                                                  // --- Initialize MediaPipe Segmentation ---
+                                                                                                                                                                  seg = new SelfieSegmentation({
+                                                                                                                                                                    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`
+                                                                                                                                                                    });
+                                                                                                                                                                    seg.setOptions({ modelSelection: 1 });
+                                                                                                                                                                    seg.onResults(results => {
+                                                                                                                                                                      mask = results.segmentationMask;
+                                                                                                                                                                      });
+
+                                                                                                                                                                      // --- Load video file ---
+                                                                                                                                                                      input.addEventListener('change', e => {
+                                                                                                                                                                        const file = e.target.files[0];
+                                                                                                                                                                          if (!file) return;
+                                                                                                                                                                            video.src = URL.createObjectURL(file);
+                                                                                                                                                                              video.load();
+                                                                                                                                                                                video.onloadeddata = () => {
+                                                                                                                                                                                    canvas.width = video.videoWidth;
+                                                                                                                                                                                        canvas.height = video.videoHeight;
+                                                                                                                                                                                            toggleSegBtn.disabled = false;
+                                                                                                                                                                                                pausePlayBtn.disabled = false;
+                                                                                                                                                                                                    video.play().catch(()=>{});
+                                                                                                                                                                                                        startLoop();
+                                                                                                                                                                                                            status.textContent = `Loaded: ${file.name}`;
+                                                                                                                                                                                                              };
+                                                                                                                                                                                                              });
+
+                                                                                                                                                                                                              // --- Toggle segmentation ---
+                                                                                                                                                                                                              toggleSegBtn.addEventListener('click', () => {
+                                                                                                                                                                                                                useSegmentation = !useSegmentation;
+                                                                                                                                                                                                                  toggleSegBtn.textContent = useSegmentation ? "Disable Segmentation" : "Enable Segmentation";
+                                                                                                                                                                                                                  });
+
+                                                                                                                                                                                                                  // --- Pause / Play ---
+                                                                                                                                                                                                                  pausePlayBtn.addEventListener('click', () => {
+                                                                                                                                                                                                                    if (video.paused) {
+                                                                                                                                                                                                                        video.play();
+                                                                                                                                                                                                                            pausePlayBtn.textContent = "Pause";
+                                                                                                                                                                                                                              } else {
+                                                                                                                                                                                                                                  video.pause();
+                                                                                                                                                                                                                                      pausePlayBtn.textContent = "Play";
+                                                                                                                                                                                                                                        }
+                                                                                                                                                                                                                                        });
+
+                                                                                                                                                                                                                                        // --- Main video render loop ---
+                                                                                                                                                                                                                                        function startLoop() {
+                                                                                                                                                                                                                                          if (loopActive) return;
+                                                                                                                                                                                                                                            loopActive = true;
+                                                                                                                                                                                                                                              function renderFrame() {
+                                                                                                                                                                                                                                                  if (video.paused || video.ended) {
+                                                                                                                                                                                                                                                        loopActive = false;
+                                                                                                                                                                                                                                                              return;
+                                                                                                                                                                                                                                                                  }
+
+                                                                                                                                                                                                                                                                      if (useSegmentation) {
+                                                                                                                                                                                                                                                                            seg.send({image: video}).then(drawFrame);
+                                                                                                                                                                                                                                                                                } else {
+                                                                                                                                                                                                                                                                                      drawFrame();
+                                                                                                                                                                                                                                                                                          }
+
+                                                                                                                                                                                                                                                                                              video.requestVideoFrameCallback(renderFrame);
+                                                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                                                  video.requestVideoFrameCallback(renderFrame);
+                                                                                                                                                                                                                                                                                                  }
+
+                                                                                                                                                                                                                                                                                                  // --- Draw frame ---
+                                                                                                                                                                                                                                                                                                  function drawFrame() {
+                                                                                                                                                                                                                                                                                                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                                                                                                                                                                                                                                                                                                      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                                                                                                                                                                                                                                                                                                        if (useSegmentation && mask) {
+                                                                                                                                                                                                                                                                                                            ctx.save();
+                                                                                                                                                                                                                                                                                                                ctx.globalCompositeOperation = 'destination-in';
+                                                                                                                                                                                                                                                                                                                    ctx.drawImage(mask, 0, 0, canvas.width, canvas.height);
+                                                                                                                                                                                                                                                                                                                        ctx.restore();
+                                                                                                                                                                                                                                                                                                                          }
+                                                                                                                                                                                                                                                                                                                          }
+                                                                                                                                                                                                                                                                                                                          </script>
+
+                                                                                                                                                                                                                                                                                                                          </body>
+                                                                                                                                                                                                                                                                                                                          </html>
