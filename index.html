@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Program Loader</title>
+</head>
+<body>
+<h1>Load Local HTML Program</h1>
+<input type="file" id="fileInput" accept=".html">
+<script>
+const fileInput = document.getElementById('fileInput');
+
+fileInput.addEventListener('change', e => {
+  const file = e.target.files[0];
+    if (!file) return;
+      
+        const reader = new FileReader();
+          reader.onload = () => {
+              // Open the HTML content in a new tab
+                  const newWindow = window.open();
+                      newWindow.document.write(reader.result);
+                          newWindow.document.close();
+                            };
+                              reader.readAsText(file);
+                              });
+                              </script>
+                              </body>
+                              </html>
