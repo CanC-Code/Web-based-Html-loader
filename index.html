@@ -5,15 +5,16 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Program Loader</title>
 <style>
-body { font-family: Arial,sans-serif; background: #0d1117; color:#c9d1d9; display:flex; flex-direction:column; align-items:center; padding:1em;}
-h1 { margin-bottom:1em; color:#58a6ff;}
+body { font-family: Arial, sans-serif; background:#0d1117; color:#c9d1d9; display:flex; flex-direction:column; align-items:center; padding:1em;}
+h1 { margin-bottom:1em; color:#58a6ff; }
+#programContainer { width:100%; max-width:1000px; margin-top:1em; }
 </style>
 </head>
 <body>
 
 <h1>Load Local HTML Program</h1>
 <input type="file" id="fileInput" accept=".html">
-<div id="programContainer" style="width:100%; max-width:1000px; margin-top:1em;"></div>
+<div id="programContainer"></div>
 
 <script>
 const fileInput = document.getElementById('fileInput');
@@ -25,25 +26,30 @@ fileInput.addEventListener('change', e => {
 
       const reader = new FileReader();
         reader.onload = () => {
-            // Replace current container content with loaded HTML
-                container.innerHTML = reader.result;
+            // Clear container
+                container.innerHTML = '';
 
-                    // Optionally run scripts inside the loaded HTML
-                        const scripts = container.querySelectorAll('script');
-                            scripts.forEach(oldScript => {
-                                  const newScript = document.createElement('script');
-                                        if(oldScript.src) {
-                                                newScript.src = oldScript.src;
-                                                        newScript.type = oldScript.type || 'text/javascript';
-                                                              } else {
-                                                                      newScript.textContent = oldScript.textContent;
-                                                                            }
-                                                                                  oldScript.parentNode.replaceChild(newScript, oldScript);
-                                                                                      });
-                                                                                        };
-                                                                                          reader.readAsText(file);
-                                                                                          });
-                                                                                          </script>
+                    // Create a wrapper div to hold the loaded HTML
+                        const wrapper = document.createElement('div');
+                            wrapper.innerHTML = reader.result;
+                                container.appendChild(wrapper);
 
-                                                                                          </body>
-                                                                                          </html>
+                                    // Execute scripts from the loaded HTML
+                                        const scripts = wrapper.querySelectorAll('script');
+                                            scripts.forEach(oldScript => {
+                                                  const newScript = document.createElement('script');
+                                                        if (oldScript.src) {
+                                                                newScript.src = oldScript.src;
+                                                                        newScript.type = oldScript.type || 'text/javascript';
+                                                                              } else {
+                                                                                      newScript.textContent = oldScript.textContent;
+                                                                                            }
+                                                                                                  oldScript.parentNode.replaceChild(newScript, oldScript);
+                                                                                                      });
+                                                                                                        };
+                                                                                                          reader.readAsText(file);
+                                                                                                          });
+                                                                                                          </script>
+
+                                                                                                          </body>
+                                                                                                          </html>
