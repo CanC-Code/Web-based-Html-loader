@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Video Layer Studio</title>
+<title>Video Layer Studio — AI Background Processor</title>
 <style>
   body {
     background: #0d1117;
@@ -25,14 +25,8 @@
     display: block;
     margin-bottom: 1em;
   }
-  canvas {
-    position: absolute;
-    top: 0;
-    left: 0;
-  }
-  #videoWrapper {
-    position: relative;
-    display: inline-block;
+  #outputVideo {
+    display: none;
   }
   .controls {
     display: flex;
@@ -71,14 +65,13 @@
 </head>
 <body>
 
-<h1>Video Layer Studio</h1>
+<h1>🎥 Video Layer Studio</h1>
 
 <input type="file" id="videoInput" accept="video/*">
 
-<div id="videoWrapper">
-  <video id="video" playsinline controls></video>
-  <canvas id="canvas"></canvas>
-</div>
+<video id="inputVideo" playsinline controls></video>
+<canvas id="canvas"></canvas>
+<video id="outputVideo" playsinline controls></video>
 
 <div class="controls">
   <select id="effectSelect">
@@ -88,6 +81,7 @@
     <option value="transparent">Transparent Background</option>
   </select>
   <button id="processBtn" disabled>Process</button>
+  <button id="saveBtn" disabled>Save</button>
   <button id="resetBtn">Reset</button>
 </div>
 
@@ -95,132 +89,158 @@
 <div id="status">Select a video to start.</div>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/ffmpeg.min.js"></script>
 <script>
-const video = document.getElementById('video');
+const inputVideo = document.getElementById('inputVideo');
+const outputVideo = document.getElementById('outputVideo');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const input = document.getElementById('videoInput');
 const processBtn = document.getElementById('processBtn');
+const saveBtn = document.getElementById('saveBtn');
 const resetBtn = document.getElementById('resetBtn');
 const effectSelect = document.getElementById('effectSelect');
 const progressBar = document.getElementById('progressFill');
 const status = document.getElementById('status');
 
-let seg;
-let currentMask = null;
-let isProcessing = false;
+let seg, mask = null, frames = [], isProcessing = false;
 
 // --- Load video ---
 input.addEventListener('change', e => {
   const file = e.target.files[0];
   if (!file) return;
-
-  video.src = URL.createObjectURL(file);
-  video.load();
-  video.onloadeddata = () => {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+  inputVideo.src = URL.createObjectURL(file);
+  inputVideo.load();
+  inputVideo.onloadeddata = () => {
+    canvas.width = inputVideo.videoWidth;
+    canvas.height = inputVideo.videoHeight;
     processBtn.disabled = false;
-    status.textContent = `Loaded video (${video.videoWidth}x${video.videoHeight})`;
-    video.play().catch(() => {});
+    saveBtn.disabled = true;
+    outputVideo.style.display = 'none';
+    canvas.style.display = 'block';
+    status.textContent = `Loaded video (${inputVideo.videoWidth}x${inputVideo.videoHeight}).`;
   };
 });
 
-// --- Initialize segmentation model ---
+// --- Initialize MediaPipe ---
 seg = new SelfieSegmentation({
   locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`
 });
-seg.setOptions({ modelSelection: 1 }); // Use best-quality model
-seg.onResults(results => {
-  currentMask = results.segmentationMask;
-  drawFrame();
-});
+seg.setOptions({ modelSelection: 1 });
+seg.onResults(results => { mask = results.segmentationMask; });
 
-// --- Draw frame with chosen effect ---
-function drawFrame() {
-  if (!currentMask) return;
-
+// --- Apply effect ---
+function applyEffect() {
+  if (!mask) return;
   const effect = effectSelect.value;
-
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-  // Composite the mask according to selected effect
-  ctx.save();
-  switch (effect) {
-    case 'person':
-      ctx.globalCompositeOperation = 'destination-in';
-      ctx.drawImage(currentMask, 0, 0, canvas.width, canvas.height);
-      break;
+  if (effect === 'person' || effect === 'transparent') {
+    ctx.drawImage(inputVideo, 0, 0, canvas.width, canvas.height);
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(mask, 0, 0, canvas.width, canvas.height);
+  } else if (effect === 'blur') {
+    const blurCanvas = document.createElement('canvas');
+    blurCanvas.width = canvas.width;
+    blurCanvas.height = canvas.height;
+    const bctx = blurCanvas.getContext('2d');
+    bctx.filter = 'blur(12px)';
+    bctx.drawImage(inputVideo, 0, 0, canvas.width, canvas.height);
 
-    case 'blur':
-      // Draw background blurred
-      const blurCanvas = document.createElement('canvas');
-      blurCanvas.width = canvas.width;
-      blurCanvas.height = canvas.height;
-      const bctx = blurCanvas.getContext('2d');
-      bctx.filter = 'blur(12px)';
-      bctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      ctx.globalCompositeOperation = 'destination-in';
-      ctx.drawImage(currentMask, 0, 0, canvas.width, canvas.height);
-      ctx.globalCompositeOperation = 'destination-over';
-      ctx.drawImage(blurCanvas, 0, 0);
-      break;
-
-    case 'color':
-      ctx.globalCompositeOperation = 'destination-over';
-      ctx.fillStyle = '#004466';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.globalCompositeOperation = 'destination-in';
-      ctx.drawImage(currentMask, 0, 0, canvas.width, canvas.height);
-      break;
-
-    case 'transparent':
-      ctx.globalCompositeOperation = 'destination-in';
-      ctx.drawImage(currentMask, 0, 0, canvas.width, canvas.height);
-      break;
+    ctx.drawImage(blurCanvas, 0, 0);
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(mask, 0, 0, canvas.width, canvas.height);
+    ctx.globalCompositeOperation = 'destination-over';
+    ctx.drawImage(blurCanvas, 0, 0);
+  } else if (effect === 'color') {
+    ctx.fillStyle = '#004466';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(mask, 0, 0, canvas.width, canvas.height);
+    ctx.globalCompositeOperation = 'destination-over';
+    ctx.drawImage(inputVideo, 0, 0, canvas.width, canvas.height);
   }
-  ctx.restore();
+  ctx.globalCompositeOperation = 'source-over';
 }
 
-// --- Process video live ---
+// --- Process video ---
 processBtn.onclick = async () => {
   if (isProcessing) return;
   isProcessing = true;
   processBtn.disabled = true;
+  saveBtn.disabled = true;
+  frames = [];
   progressBar.style.width = '0%';
-  status.textContent = 'Processing...';
+  status.textContent = 'Processing frames...';
 
-  const duration = video.duration;
   const fps = 25;
-  const totalFrames = Math.floor(duration * fps);
-  video.currentTime = 0;
+  const totalFrames = Math.floor(inputVideo.duration * fps);
 
   for (let i = 0; i < totalFrames; i++) {
     await new Promise(r => {
-      video.onseeked = r;
-      video.currentTime = i / fps;
+      inputVideo.onseeked = r;
+      inputVideo.currentTime = i / fps;
     });
 
-    await seg.send({ image: video });
+    await seg.send({ image: inputVideo });
+    applyEffect();
 
+    frames.push(canvas.toDataURL('image/png'));
     progressBar.style.width = ((i / totalFrames) * 100).toFixed(1) + '%';
   }
 
-  status.textContent = 'Processing complete (live render only).';
+  status.textContent = 'Encoding with FFmpeg.js...';
+  await encodeVideo(frames, fps);
   isProcessing = false;
+  processBtn.disabled = false;
 };
+
+// --- Encode video with FFmpeg.js ---
+async function encodeVideo(frames, fps) {
+  const { createFFmpeg, fetchFile } = FFmpeg;
+  const ffmpeg = createFFmpeg({ log: false });
+  await ffmpeg.load();
+
+  for (let i = 0; i < frames.length; i++) {
+    const img = await fetch(frames[i]).then(r => r.arrayBuffer());
+    ffmpeg.FS('writeFile', `frame${String(i).padStart(5, '0')}.png`, new Uint8Array(img));
+  }
+
+  await ffmpeg.run('-framerate', String(fps), '-i', 'frame%05d.png', '-pix_fmt', 'yuv420p', 'output.mp4');
+  const data = ffmpeg.FS('readFile', 'output.mp4');
+
+  const blob = new Blob([data.buffer], { type: 'video/mp4' });
+  const url = URL.createObjectURL(blob);
+
+  outputVideo.src = url;
+  outputVideo.style.display = 'block';
+  canvas.style.display = 'none';
+  outputVideo.play();
+
+  saveBtn.disabled = false;
+  saveBtn.onclick = () => {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'processed_video.mp4';
+    a.click();
+  };
+
+  status.textContent = 'Processing complete.';
+  progressBar.style.width = '100%';
+}
 
 // --- Reset ---
 resetBtn.onclick = () => {
-  video.pause();
-  video.src = '';
-  currentMask = null;
+  inputVideo.pause();
+  inputVideo.src = '';
+  outputVideo.src = '';
+  mask = null;
+  frames = [];
   progressBar.style.width = '0%';
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   status.textContent = 'Select a video to start.';
   processBtn.disabled = true;
+  saveBtn.disabled = true;
 };
 </script>
 
