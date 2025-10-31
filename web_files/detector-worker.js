@@ -9,7 +9,7 @@ self.onmessage = async (e) => {
   if(type === 'init'){
     if(model) return postMessage({ type:'ready' });
     try {
-      model = await deeplab.load({ base: 'pascal', quantizationBytes: 2 });
+      model = await deeplab.load({ base:'pascal', quantizationBytes:2 });
       postMessage({ type:'ready' });
     } catch(err){
       postMessage({ type:'error', message: err.message });
@@ -23,7 +23,7 @@ self.onmessage = async (e) => {
       const off = new OffscreenCanvas(width, height);
       const ctx = off.getContext('2d');
       const imgData = new ImageData(new Uint8ClampedArray(frameData), width, height);
-      ctx.putImageData(imgData, 0, 0);
+      ctx.putImageData(imgData,0,0);
 
       const seg = await model.segment(off);
 
