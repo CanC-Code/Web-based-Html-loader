@@ -10,15 +10,34 @@
 <h1>Advanced Object Layer Processor</h1>
 
 <input type="file" id="videoInput" accept="video/*">
+
 <div id="videoContainer">
   <video id="video" controls playsinline></video>
   <canvas id="canvas"></canvas>
+  <canvas id="maskEditor"></canvas>
 </div>
 
 <div class="controls">
   <button id="startBtn">Start Processing</button>
   <button id="stopBtn" disabled>Stop</button>
   <button id="saveBtn" disabled>Save Result</button>
+</div>
+
+<div class="options">
+  <label>Mode:
+    <select id="modeSelect">
+      <option value="motion">Motion Detection</option>
+      <option value="color">Color Filter</option>
+      <option value="edges">Edge Detection</option>
+      <option value="custom">Custom Mask</option>
+    </select>
+  </label>
+
+  <label>Mask Opacity:
+    <input type="range" id="opacityRange" min="0" max="1" step="0.05" value="0.5">
+  </label>
+
+  <button id="toggleMaskBtn">Toggle Mask</button>
 </div>
 
 <p id="status">Ready.</p>
