@@ -1,65 +1,56 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Video Layer - Object Detection</title>
-<link rel="stylesheet" href="style.css">
-</head>
-<body>
-<h1>Advanced Object Layer Processor</h1>
+// detector.js
+let Detector = {
+  ready: false,
+  prevGray: null,
 
-<input type="file" id="videoInput" accept="video/*">
-<video id="video" controls playsinline></video>
-<canvas id="canvas"></canvas>
+  async init() {
+    if (typeof cv === "undefined") {
+      await new Promise(resolve => {
+        let script = document.createElement("script");
+        script.src = "https://docs.opencv.org/4.x/opencv.js";
+        script.onload = resolve;
+        document.head.appendChild(script);
+      });
+    }
 
-<div class="controls">
-  <button id="startBtn">Start Processing</button>
-  <button id="stopBtn" disabled>Stop</button>
-  <button id="saveBtn" disabled>Save Result</button>
-</div>
+    await new Promise(r => cv['onRuntimeInitialized'] = r);
+    this.ready = true;
+    console.log("OpenCV.js initialized");
+  },
 
-<p id="status">Ready.</p>
+  async processFrame(frame) {
+    if (!this.ready) return null;
 
-<script src="detector.js"></script>
-<script>
-const video = document.getElementById('video');
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
-const statusEl = document.getElementById('status');
+    const src = cv.matFromImageData(frame);
+    const gray = new cv.Mat();
+    const diff = new cv.Mat();
+    const mask = new cv.Mat();
 
-let processing = false;
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    if (this.prevGray) {
+      cv.absdiff(gray, this.prevGray, diff);
+      cv.threshold(diff, mask, 25, 255, cv.THRESH_BINARY);
+      cv.medianBlur(mask, mask, 5);
+    }
 
-document.getElementById('videoInput').addEventListener('change', e => {
-  const file = e.target.files[0];
-  if (!file) return;
-  video.src = URL.createObjectURL(file);
-  video.load();
-  video.onloadeddata = () => {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    statusEl.textContent = "Video loaded.";
-  };
-});
+    if (this.prevGray) this.prevGray.delete();
+    this.prevGray = gray.clone();
 
-document.getElementById('startBtn').onclick = async () => {
-  if (!video.src) return;
-  statusEl.textContent = "Initializing detector...";
-  await Detector.init();
-  processing = true;
-  processLoop();
+    src.delete(); diff.delete(); gray.delete();
+    return mask;
+  },
+
+  applyMask(ctx, maskMat) {
+    const imgData = new ImageData(new Uint8ClampedArray(maskMat.data), maskMat.cols, maskMat.rows);
+    const tempCanvas = document.createElement("canvas");
+    tempCanvas.width = maskMat.cols;
+    tempCanvas.height = maskMat.rows;
+    const tempCtx = tempCanvas.getContext("2d");
+    tempCtx.putImageData(imgData, 0, 0);
+
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.drawImage(tempCanvas, 0, 0);
+    ctx.restore();
+  }
 };
-
-document.getElementById('stopBtn').onclick = () => processing = false;
-
-async function processLoop() {
-  if (!processing) return;
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-  const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const mask = await Detector.processFrame(frame);
-  if (mask) Detector.applyMask(ctx, mask);
-  requestAnimationFrame(processLoop);
-}
-</script>
-</body>
-</html>
