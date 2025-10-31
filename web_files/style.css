@@ -13,20 +13,23 @@ body {
   margin-top: 10px;
 }
 
-#video, #canvas {
+#video, #canvas, #maskEditor {
   max-width: 90vw;
   border-radius: 10px;
   background: #000;
 }
 
-#canvas {
+#canvas, #maskEditor {
   position: absolute;
   top: 0;
   left: 0;
-  pointer-events: none;
 }
 
-.controls {
+#maskEditor {
+  cursor: crosshair;
+}
+
+.controls, .options {
   margin-top: 10px;
 }
 
@@ -44,4 +47,13 @@ button {
 button:disabled {
   background-color: #555;
   cursor: not-allowed;
+}
+
+label {
+  margin: 0 10px;
+  font-size: 14px;
+}
+
+input[type="range"] {
+  vertical-align: middle;
 }
