@@ -3,206 +3,530 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Video Layer — Live Multi-object Segmentation</title>
+<title>Video Layer — Enhanced Live Multi-object Segmentation</title>
 <style>
-  :root{--bg:#0d1117;--panel:#0f1720;--muted:#8b949e;--accent:#58a6ff;}
-  body{margin:0;font-family:Inter,Arial,sans-serif;background:var(--bg);color:#c9d1d9;display:flex;flex-direction:column;align-items:center;padding:1rem;}
-  h1{color:var(--accent);margin:0 0 0.75rem 0;font-size:1.2rem;}
-  .topbar{display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;justify-content:center;margin-bottom:0.75rem;width:100%;max-width:1100px;}
+  :root{--bg:#0d1117;--panel:#0f1720;--muted:#8b949e;--accent:#58a6ff;--btn:#238636;}
+  body{margin:0;font-family:Inter,Arial,sans-serif;background:var(--bg);color:#c9d1d9;display:flex;flex-direction:column;align-items:center;padding:12px;}
+  h1{color:var(--accent);margin:0 0 12px 0;font-size:1.25rem;}
+  .topbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:center;margin-bottom:12px;width:100%;max-width:1100px;}
   .control,input[type=file]{background:var(--panel);color:inherit;border:1px solid #21262d;padding:8px 12px;border-radius:8px;font-weight:600;cursor:pointer;}
-  #layout{display:grid;grid-template-columns:1fr 320px;gap:14px;width:100%;max-width:1100px;align-items:start;}
+  .control[disabled]{opacity:0.5;cursor:not-allowed;}
+  #layout{display:grid;grid-template-columns:1fr 340px;gap:14px;width:100%;max-width:1200px;align-items:start;}
   #viewer{position:relative;background:#000;border-radius:10px;overflow:hidden;}
-  video, canvas{display:block;width:100%;height:auto;max-width:100%;}
-  #mainCanvas{position:absolute;left:0;top:0;pointer-events:none;}
-  #sidebar{background:var(--panel);padding:12px;border-radius:10px;min-height:320px;color:#c9d1d9;}
+  video,canvas{display:block;width:100%;height:auto;max-width:100%;}
+  #mainCanvas{position:absolute;left:0;top:0;pointer-events:none;image-rendering:pixelated;}
+  #sidebar{background:var(--panel);padding:12px;border-radius:10px;min-height:360px;color:#c9d1d9;}
   .section{margin-bottom:12px;}
   label{display:block;font-size:0.85rem;color:var(--muted);margin-bottom:6px;}
-  .list{max-height:220px;overflow:auto;border:1px solid #1f2933;border-radius:8px;padding:6px;background:#07080a;}
-  .class-item{padding:6px;border-radius:6px;cursor:pointer;margin-bottom:6px;background:#0b1116;}
+  .list{max-height:240px;overflow:auto;border:1px solid #1f2933;border-radius:8px;padding:6px;background:#07080a;}
+  .class-item{padding:8px;border-radius:6px;cursor:pointer;margin-bottom:6px;background:#0b1116;display:flex;justify-content:space-between;align-items:center;}
   .class-item.selected{outline:2px solid rgba(88,166,255,0.18);background:#081018;}
   .small{font-size:0.85rem;color:var(--muted);}
   .btn-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;}
   .accent{background:var(--accent);color:#061025;padding:6px 10px;border-radius:6px;cursor:pointer;font-weight:700;}
   .muted{background:#111827;color:var(--muted);padding:6px 8px;border-radius:6px;}
-  #status{margin-top:10px;color:var(--muted);font-size:0.9rem;}
-  #progressContainer{width:100%;background:#21262d;height:10px;border-radius:6px;overflow:hidden;margin-top:6px;}
-  #progressBar{height:100%;width:0%;background:var(--accent);}
-  @media(max-width:920px){#layout{grid-template-columns:1fr;}#sidebar{order:2;}}
+  #status{margin-top:8px;color:var(--muted);font-size:0.9rem;word-break:break-word;}
+  #progressContainer{width:100%;height:12px;background:#121316;border-radius:6px;overflow:hidden;margin-top:8px;}
+  #progressFill{width:0%;height:100%;background:linear-gradient(90deg,#38bdf8,#60a5fa);transition:width .12s linear;}
+  @media (max-width:900px){#layout{grid-template-columns:1fr;}#sidebar{order:2}}
 </style>
+
+<!-- TensorFlow.js + DeepLab -->
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@0.2.2/dist/deeplab.min.js"></script>
 </head>
 <body>
-<h1>Video Layer — Live Multi-object Segmentation</h1>
-<div class="topbar">
-  <input id="videoInput" type="file" accept="video/*" class="control" />
-  <button id="toggleDepth" class="control muted">Toggle Depth Grid</button>
-  <button id="exportBtn" class="control" disabled>Export Processed Video</button>
-</div>
+  <h1>Video Layer — Enhanced Live Multi-object Segmentation</h1>
 
-<div id="layout">
-  <div id="viewer">
-    <video id="video" playsinline controls style="width:100%; display:block;"></video>
-    <canvas id="mainCanvas"></canvas>
+  <div class="topbar">
+    <input id="videoInput" type="file" accept="video/*" class="control">
+    <button id="toggleDepth" class="control muted" title="Toggle simulated depth overlay">Toggle Depth Grid</button>
+    <button id="exportBtn" class="control" disabled title="Record processed canvas to WebM">Export (WebM)</button>
   </div>
 
-  <aside id="sidebar">
-    <div class="section">
-      <label>Detected classes / layers (click to select)</label>
-      <div id="classList" class="list small">No segmentation yet.</div>
+  <div id="layout">
+    <div id="viewer">
+      <video id="video" playsinline controls style="width:100%;display:block;"></video>
+      <canvas id="mainCanvas"></canvas>
     </div>
 
-    <div class="section">
-      <label>Selected layer actions</label>
-      <div class="btn-row">
-        <button id="hideLayerBtn" class="control muted" disabled>Toggle Visible</button>
-        <button id="replaceColorBtn" class="control" disabled>Fill Color</button>
-        <input id="fillColor" type="color" value="#000000" style="padding:6px;border-radius:6px;border:none;"/>
+    <aside id="sidebar">
+      <div class="section">
+        <label>Detected classes / layers</label>
+        <div id="classList" class="list small">No segmentation yet.</div>
       </div>
-      <div class="btn-row" style="margin-top:8px;">
-        <button id="restoreBgBtn" class="control" disabled>Restore Background</button>
+
+      <div class="section">
+        <label>Selected layer actions</label>
+        <div class="btn-row">
+          <button id="hideLayerBtn" class="control muted" disabled>Toggle Visible</button>
+          <button id="replaceColorBtn" class="control muted" disabled>Fill Color</button>
+          <input id="fillColor" type="color" value="#000000" style="padding:6px;border-radius:6px;border:none;">
+        </div>
+        <div class="btn-row" style="margin-top:8px;">
+          <button id="restoreBgBtn" class="control muted" disabled>Restore Background</button>
+        </div>
       </div>
-    </div>
 
-    <div class="section">
-      <label>Depth Grid</label>
-      <div class="small">Simulated depth zones (1..20)</div>
-    </div>
+      <div class="section">
+        <label>Depth Grid</label>
+        <div class="small">Simulated depth zones (visual only).</div>
+        <div style="margin-top:6px;">
+          <input id="depthScale" type="range" min="1" max="20" value="8" style="width:100%;">
+        </div>
+      </div>
 
-    <div class="section">
-      <label>Export progress</label>
-      <div id="progressContainer"><div id="progressBar"></div></div>
-    </div>
+      <div class="section">
+        <label>Export progress</label>
+        <div id="progressContainer"><div id="progressFill"></div></div>
+      </div>
 
-    <div id="status">Waiting for video...</div>
-  </aside>
-</div>
+      <div id="status">Loading model...</div>
+    </aside>
+  </div>
 
 <script>
-const videoInput=document.getElementById('videoInput');
-const toggleDepthBtn=document.getElementById('toggleDepth');
-const exportBtn=document.getElementById('exportBtn');
-const video=document.getElementById('video');
-const mainCanvas=document.getElementById('mainCanvas');
-const mainCtx=mainCanvas.getContext('2d');
-const classListEl=document.getElementById('classList');
-const statusEl=document.getElementById('status');
-const hideLayerBtn=document.getElementById('hideLayerBtn');
-const replaceColorBtn=document.getElementById('replaceColorBtn');
-const restoreBgBtn=document.getElementById('restoreBgBtn');
-const fillColorInput=document.getElementById('fillColor');
-const progressBar=document.getElementById('progressBar');
+/* Enhanced live segmentation + proper layer building, color replacement, depth grid, export gauge.
+   Notes:
+   - Heavy work is done in small offscreen canvases; segmentation uses DeepLab (ADE20K).
+   - Per-class masks are created at segmentation resolution and scaled to the main canvas to avoid artifacts.
+   - Export uses MediaRecorder to capture the processed canvas into a WebM blob.
+*/
 
-let deeplabModel=null;
-let segResult=null;
-let classCanvases={};
-let classesOrdered=[];
-let selectedClass=null;
-let showDepthGrid=false;
+const videoInput = document.getElementById('videoInput');
+const video = document.getElementById('video');
+const mainCanvas = document.getElementById('mainCanvas');
+const mainCtx = mainCanvas.getContext('2d');
 
-// Load best model automatically
-(async()=>{statusEl.textContent='Loading DeepLab ADE20K...';deeplabModel=await deeplab.load({base:'ade20k',quantizationBytes:2});statusEl.textContent='Model loaded. Ready to select video.';})();
+const classListEl = document.getElementById('classList');
+const statusEl = document.getElementById('status');
+const toggleDepthBtn = document.getElementById('toggleDepth');
+const exportBtn = document.getElementById('exportBtn');
+const hideLayerBtn = document.getElementById('hideLayerBtn');
+const replaceColorBtn = document.getElementById('replaceColorBtn');
+const restoreBgBtn = document.getElementById('restoreBgBtn');
+const fillColorInput = document.getElementById('fillColor');
+const depthScaleInput = document.getElementById('depthScale');
+const progressFill = document.getElementById('progressFill');
 
-// Video load handling
-videoInput.addEventListener('change',async()=>{
-  const file=videoInput.files[0];if(!file)return;
-  video.pause();video.src=URL.createObjectURL(file);
-  await new Promise(r=>video.onloadedmetadata=r);
-  mainCanvas.width=video.videoWidth;mainCanvas.height=video.videoHeight;
-  statusEl.textContent=`Video loaded: ${video.videoWidth}×${video.videoHeight}`;
-  exportBtn.disabled=false;
-  video.play();
-  startDrawLoop();
-  runSegmentationOnce();
+let deeplabModel = null;
+let segResult = null;           // latest segmentation result from deeplab.segment()
+let segIntervalMs = 300;       // throttle segmentation frequency
+let runningSegmentation = false;
+let classCanvases = {};        // cid -> {canvas (mask scaled to main size), ctx, visible, replaceColor, name}
+let classesOrdered = [];       // list of class ids present
+let selectedClass = null;
+let showDepthGrid = false;
+let depthScale = parseInt(depthScaleInput.value,10);
+
+// Utility: status and progress
+function setStatus(s){ statusEl.textContent = s; console.log('[video_layer] ', s); }
+function setProgress(p){ progressFill.style.width = Math.max(0,Math.min(100,p)) + '%'; }
+
+// Load model automatically on page load
+(async function initModel(){
+  try{
+    setStatus('Loading DeepLab (ADE20K) — this can take a few seconds...');
+    deeplabModel = await deeplab.load({ base: 'ade20k', quantizationBytes: 2 });
+    setStatus('Model loaded — select a video to begin.');
+  }catch(err){
+    console.error(err);
+    setStatus('Model load failed: ' + (err.message || err));
+  }
+})();
+
+// Robust video loading: wait for metadata, adjust canvases, start loops
+videoInput.addEventListener('change', async () => {
+  const file = videoInput.files[0];
+  if(!file) return;
+
+  // Reset state
+  segResult = null;
+  classCanvases = {};
+  classesOrdered = [];
+  selectedClass = null;
+  classListEl.innerHTML = 'No segmentation yet.';
+  hideLayerBtn.disabled = true;
+  replaceColorBtn.disabled = true;
+  restoreBgBtn.disabled = true;
+  exportBtn.disabled = true;
+  setProgress(0);
+
+  // Load video and wait for metadata
+  video.pause();
+  video.src = URL.createObjectURL(file);
+  video.load();
+  await new Promise(resolve => { video.onloadedmetadata = resolve; });
+
+  // Resize main canvas to video size
+  mainCanvas.width = video.videoWidth;
+  mainCanvas.height = video.videoHeight;
+
+  setStatus(`Video ready — ${video.videoWidth}×${video.videoHeight}. Starting live preview...`);
+  exportBtn.disabled = false;
+
+  // Start live display and segmentation loops
+  video.play().catch(()=>{}); // may be blocked by autoplay - user can press play
+  startRenderLoop();
+  startSegmentationLoop();   // runs until video paused/ended
 });
 
-// Live draw loop
-function startDrawLoop(){
-  function loop(){
-    if(video.readyState>=2){
+// Render loop: draw video then overlay layers and depth grid
+function startRenderLoop(){
+  function frame(){
+    if(video.readyState >= 2){
+      // draw live frame
       mainCtx.clearRect(0,0,mainCanvas.width,mainCanvas.height);
-      mainCtx.drawImage(video,0,0,mainCanvas.width,mainCanvas.height);
-      if(showDepthGrid) drawDepthGrid();
+      mainCtx.drawImage(video, 0, 0, mainCanvas.width, mainCanvas.height);
+
+      // draw per-class overlays in stable order (classesOrdered)
       for(const cid of classesOrdered){
-        const meta=classCanvases[cid];
-        if(meta.visible&&meta.canvas){mainCtx.globalAlpha=0.5;mainCtx.drawImage(meta.canvas,0,0,mainCanvas.width,mainCanvas.height);mainCtx.globalAlpha=1;}
+        const meta = classCanvases[cid];
+        if(!meta) continue;
+        if(!meta.visible) continue;
+        // If replaceColor is set, draw the color where mask exists.
+        if(meta.replaceColor){
+          // draw mask as alpha, then fill with color using source-in
+          mainCtx.save();
+          mainCtx.drawImage(meta.canvas, 0, 0, mainCanvas.width, mainCanvas.height);
+          mainCtx.globalCompositeOperation = 'source-in';
+          mainCtx.fillStyle = meta.replaceColor;
+          mainCtx.fillRect(0,0,mainCanvas.width, mainCanvas.height);
+          mainCtx.restore();
+        } else {
+          // default: draw the mask as a subtle highlight (white mask at low alpha)
+          mainCtx.save();
+          mainCtx.globalAlpha = 0.35;
+          mainCtx.drawImage(meta.canvas, 0, 0, mainCanvas.width, mainCanvas.height);
+          mainCtx.restore();
+        }
       }
+
+      // draw depth overlay if enabled
+      if(showDepthGrid) drawDepthGrid();
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+
+// DeepLab segmentation loop (throttled): updates segResult and rebuilds class masks
+async function startSegmentationLoop(){
+  if(!deeplabModel) { setStatus('Model not ready.'); return; }
+  if(runningSegmentation) return;
+  runningSegmentation = true;
+  setStatus('Segmentation loop started (throttled).');
+  while(runningSegmentation && !video.paused && !video.ended){
+    try{
+      // create a small offscreen canvas and draw current video frame at segmentation resolution (256)
+      const off = document.createElement('canvas');
+      off.width = 256; off.height = 256;
+      const offCtx = off.getContext('2d');
+      offCtx.drawImage(video, 0, 0, off.width, off.height);
+
+      setStatus('Running segmentation (frame)...');
+      const seg = await deeplabModel.segment(off); // returns segmentationMap etc
+      segResult = seg;
+      buildClassCanvasesFromSeg(seg); // rebuild masks scaled to mainCanvas size
+      setStatus('Segmentation updated — classes: ' + classesOrdered.slice(0,8).map(id => classCanvases[id].name || id).join(', '));
+      setProgress(60);
+
+    }catch(err){
+      console.error('Segmentation loop error', err);
+      setStatus('Segmentation error: ' + (err.message||err));
+    }
+    // throttle
+    await new Promise(r => setTimeout(r, segIntervalMs));
+  }
+  runningSegmentation = false;
+  setStatus('Segmentation stopped.');
+  setProgress(100);
+}
+
+// Build per-class mask canvases scaled to main canvas size
+function buildClassCanvasesFromSeg(seg){
+  // seg.width, seg.height are seg resolution (likely 256)
+  const sw = seg.width, sh = seg.height;
+  const segMapRaw = seg.segmentationMap; // could be Uint8Array length sw*sh or RGBA length sw*sh*4
+  // normalize to classIdMap [sw*sh]
+  let classIdMap;
+  if(segMapRaw && segMapRaw.length === sw*sh){
+    classIdMap = segMapRaw;
+  } else if(segMapRaw && segMapRaw.length === sw*sh*4){
+    // convert colors to class ids by mapping unique colors
+    classIdMap = new Uint8ClampedArray(sw*sh);
+    const colorToId = {};
+    let nextId = 0;
+    for(let p=0;p<sw*sh;p++){
+      const r = segMapRaw[p*4], g = segMapRaw[p*4+1], b = segMapRaw[p*4+2];
+      const key = `${r},${g},${b}`;
+      if(!(key in colorToId)) colorToId[key] = nextId++;
+      classIdMap[p] = colorToId[key];
+    }
+  } else {
+    setStatus('Unknown segmentation format.');
+    return;
+  }
+
+  // build legend mapping if available
+  const legend = seg.legend || {};
+
+  // determine present classes
+  const present = new Set();
+  for(let i=0;i<classIdMap.length;i++) present.add(classIdMap[i]);
+  classesOrdered = Array.from(present).sort((a,b)=>a-b);
+
+  // create small mask canvases at seg resolution for each class, then scale them into full-size canvases
+  const smallMasks = {}; // cid -> canvas (sw x sh)
+  classesOrdered.forEach(cid => {
+    const sc = document.createElement('canvas');
+    sc.width = sw; sc.height = sh;
+    const scx = sc.getContext('2d');
+    const imageData = scx.createImageData(sw, sh);
+    for(let p=0;p<sw*sh;p++){
+      const off = p*4;
+      const match = (classIdMap[p] === cid) ? 255 : 0;
+      imageData.data[off] = 255;
+      imageData.data[off+1] = 255;
+      imageData.data[off+2] = 255;
+      imageData.data[off+3] = match;
+    }
+    scx.putImageData(imageData, 0, 0);
+    smallMasks[cid] = sc;
+  });
+
+  // now create full-size canvases for each class where we draw the small mask scaled to main canvas
+  classCanvases = {};
+  classesOrdered.forEach(cid => {
+    const cFull = document.createElement('canvas');
+    cFull.width = mainCanvas.width;
+    cFull.height = mainCanvas.height;
+    const cfCtx = cFull.getContext('2d');
+    // draw scaled mask into full canvas, so masks are smooth and correctly sized
+    cfCtx.clearRect(0,0,cFull.width,cFull.height);
+    cfCtx.drawImage(smallMasks[cid], 0, 0, cFull.width, cFull.height);
+    // store metadata
+    classCanvases[cid] = {
+      canvas: cFull,
+      ctx: cfCtx,
+      visible: true,
+      replaceColor: null,
+      name: legend[cid] || (`class-${cid}`)
+    };
+  });
+
+  populateClassListUI();
+}
+
+// Populate class list UI
+function populateClassListUI(){
+  classListEl.innerHTML = '';
+  if(!classesOrdered || classesOrdered.length === 0){
+    classListEl.textContent = 'No segmentation classes yet.';
+    return;
+  }
+  classesOrdered.forEach(cid => {
+    const meta = classCanvases[cid];
+    const div = document.createElement('div');
+    div.className = 'class-item';
+    div.innerHTML = `<span>${meta.name}</span><small style="opacity:.7">id:${cid}</small>`;
+    div.onclick = () => selectClass(cid, div);
+    classListEl.appendChild(div);
+  });
+}
+
+// Select a class from UI
+function selectClass(cid, el){
+  selectedClass = cid;
+  Array.from(classListEl.children).forEach(ch => ch.classList.remove('selected'));
+  if(el) el.classList.add('selected');
+  hideLayerBtn.disabled = false;
+  replaceColorBtn.disabled = false;
+  restoreBgBtn.disabled = false;
+  setStatus('Selected layer: ' + classCanvases[cid].name);
+}
+
+// Layer control handlers
+hideLayerBtn.addEventListener('click', () => {
+  if(selectedClass === null) return;
+  const m = classCanvases[selectedClass];
+  m.visible = !m.visible;
+  hideLayerBtn.textContent = m.visible ? 'Hide Layer' : 'Show Layer';
+});
+
+replaceColorBtn.addEventListener('click', () => {
+  if(selectedClass === null) return;
+  const color = fillColorInput.value;
+  classCanvases[selectedClass].replaceColor = color;
+  setStatus(`Applied fill color ${color} to ${classCanvases[selectedClass].name}`);
+});
+
+restoreBgBtn.addEventListener('click', () => {
+  if(selectedClass === null) return;
+  classCanvases[selectedClass].replaceColor = null;
+  classCanvases[selectedClass].visible = false;
+  setStatus(`Restored background for ${classCanvases[selectedClass].name}`);
+});
+
+// Depth grid drawing (full-size)
+function drawDepthGrid(){
+  const w = mainCanvas.width, h = mainCanvas.height;
+  const zones = 20;
+  mainCtx.save();
+  mainCtx.globalAlpha = 0.18;
+  for(let z = 0; z < zones; z++){
+    const y = Math.round((z / zones) * h);
+    const zoneHeight = Math.ceil(h / zones);
+    mainCtx.fillStyle = `hsl(${(z*16)%360} 60% ${62 - z*1}%)`;
+    mainCtx.fillRect(0, y, w, zoneHeight);
+  }
+  // grid lines
+  mainCtx.globalAlpha = 0.12;
+  mainCtx.strokeStyle = '#000';
+  mainCtx.lineWidth = 1;
+  for(let r = 0; r <= zones; r++){
+    const y = Math.round((r/zones) * h);
+    mainCtx.beginPath(); mainCtx.moveTo(0,y); mainCtx.lineTo(w,y); mainCtx.stroke();
+  }
+  mainCtx.restore();
+}
+
+// Toggle depth
+toggleDepthBtn.addEventListener('click', () => {
+  showDepthGrid = !showDepthGrid;
+  toggleDepthBtn.textContent = showDepthGrid ? 'Depth: ON' : 'Toggle Depth Grid';
+});
+
+// Depth scale (currently visual; kept for future use)
+depthScaleInput.addEventListener('input', e => {
+  depthScale = parseInt(e.target.value, 10);
+});
+
+// Export processed canvas as WebM using MediaRecorder
+exportBtn.addEventListener('click', async () => {
+  if(!video.src){ setStatus('Load a video first.'); return; }
+  setStatus('Starting recording — recording will capture the processed canvas.');
+  setProgress(0);
+
+  // set up MediaRecorder
+  const fps = 25;
+  const stream = mainCanvas.captureStream(fps);
+  const recChunks = [];
+  let mime = 'video/webm;codecs=vp8';
+  let recorder;
+  try {
+    recorder = new MediaRecorder(stream, { mimeType: mime });
+  } catch (e) {
+    // fallback
+    recorder = new MediaRecorder(stream);
+  }
+  recorder.ondataavailable = e => { if(e.data && e.data.size) recChunks.push(e.data); };
+  recorder.onstop = () => {
+    const blob = new Blob(recChunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `processed_${Date.now()}.webm`;
+    a.click();
+    setStatus('Recording finished — download started.');
+    setProgress(100);
+  };
+
+  // start recording, then play the video from start for full capture
+  recChunks.length = 0;
+  recorder.start();
+  setStatus('Recording — playing video to capture processed frames.');
+  video.currentTime = 0;
+  await video.play().catch(()=>{ setStatus('Press play on the video to continue recording (autoplay blocked).'); });
+
+  // progress update loop — shows fraction of video captured
+  const duration = video.duration || 1;
+  const progressLoop = setInterval(() => {
+    const pct = Math.min(99, Math.round((video.currentTime / duration) * 100));
+    setProgress(pct);
+  }, 250);
+
+  // stop recorder when video ends
+  const onEnded = () => {
+    clearInterval(progressLoop);
+    if(recorder.state === 'recording') recorder.stop();
+    video.removeEventListener('ended', onEnded);
+  };
+  video.addEventListener('ended', onEnded);
+});
+
+// Utility helpers
+function setStatus(s){ statusEl.textContent = s; console.log('[video_layer]', s); }
+function setProgress(v){ progressFill.style.width = Math.max(0,Math.min(100,v)) + '%'; }
+
+// Start the render loop right away (it will draw nothing until video.readyState>=2)
+(function startRender() {
+  function loop(){
+    if(video.readyState >= 2 && mainCanvas.width && mainCanvas.height){
+      // draw the video base frame (other overlays are handled in startRenderLoop's loop)
+      // (actual overlay drawing happens in the separate render loop started by startRenderLoop via startRenderLoop -> frame() )
     }
     requestAnimationFrame(loop);
   }
   loop();
-}
+})();
 
-// Segmentation
-async function runSegmentationOnce(){
-  if(!deeplabModel||!video.videoWidth) return;
-  statusEl.textContent='Running segmentation...';
-  const off=document.createElement('canvas');off.width=video.videoWidth;off.height=video.videoHeight;
-  const ctx=off.getContext('2d');ctx.drawImage(video,0,0,off.width,off.height);
-  segResult=await deeplabModel.segment(off);
-  buildClassCanvases(segResult);
-  statusEl.textContent='Segmentation ready — classes: '+classesOrdered.map(id=>classCanvases[id].name).slice(0,6).join(', ');
-}
+// Start a dedicated render loop that ensures overlays are visible (separate from segmentation loop)
+function startRenderLoop(){
+  // Only start once
+  if(startRenderLoop.started) return;
+  startRenderLoop.started = true;
 
-// Build per-class mask canvases
-function buildClassCanvases(seg){
-  const w=seg.width,h=seg.height;
-  const segMap=seg.segmentationMap;
-  let classIdMap;
-  if(segMap.length===w*h){classIdMap=segMap;}
-  else{
-    classIdMap=new Uint8ClampedArray(w*h);
-    const colorToId={};let nextId=0;
-    for(let p=0;p<w*h;p++){
-      const r=segMap[p*4],g=segMap[p*4+1],b=segMap[p*4+2];const key=`${r},${g},${b}`;
-      if(!(key in colorToId))colorToId[key]=nextId++;
-      classIdMap[p]=colorToId[key];
+  (function frame(){
+    if(video.readyState >= 2 && mainCanvas.width && mainCanvas.height){
+      // draw video frame
+      mainCtx.clearRect(0,0,mainCanvas.width,mainCanvas.height);
+      mainCtx.drawImage(video, 0, 0, mainCanvas.width, mainCanvas.height);
+
+      // composite each class canvas (with replacement color if any)
+      for(const cid of classesOrdered){
+        const meta = classCanvases[cid];
+        if(!meta || !meta.canvas) continue;
+        if(!meta.visible) continue;
+
+        if(meta.replaceColor){
+          // mask then color fill
+          mainCtx.save();
+          // draw mask onto canvas (mask is white where class exists)
+          mainCtx.drawImage(meta.canvas, 0, 0, mainCanvas.width, mainCanvas.height);
+          mainCtx.globalCompositeOperation = 'source-in';
+          mainCtx.fillStyle = meta.replaceColor;
+          mainCtx.fillRect(0, 0, mainCanvas.width, mainCanvas.height);
+          mainCtx.globalCompositeOperation = 'source-over';
+          mainCtx.restore();
+        } else {
+          // subtle highlight to show mask (white soft overlay)
+          mainCtx.save();
+          mainCtx.globalAlpha = 0.28;
+          mainCtx.drawImage(meta.canvas, 0, 0, mainCanvas.width, mainCanvas.height);
+          mainCtx.restore();
+        }
+      }
+
+      if(showDepthGrid) drawDepthGrid();
     }
-  }
-  const legend=seg.legend||{};
-  classCanvases={};
-  const presentIds=new Set();for(let i=0;i<w*h;i++)presentIds.add(classIdMap[i]);
-  classesOrdered=Array.from(presentIds).sort((a,b)=>a-b);
-  classesOrdered.forEach(cid=>{
-    const c=document.createElement('canvas');c.width=w;c.height=h;
-    const cx=c.getContext('2d');const maskImg=cx.createImageData(w,h);
-    for(let p=0;p<w*h;p++){const match=(classIdMap[p]===cid);const off=p*4;maskImg.data[off]=255;maskImg.data[off+1]=255;maskImg.data[off+2]=255;maskImg.data[off+3]=match?255:0;}
-    cx.putImageData(maskImg,0,0);
-    classCanvases[cid]={canvas:c,ctx:cx,visible:true,replaceColor:null,name:legend[cid]||('class-'+cid)};
-  });
-  populateClassListUI();
+    requestAnimationFrame(frame);
+  })();
 }
 
-// Populate class list
-function populateClassListUI(){classListEl.innerHTML='';if(!classesOrdered.length){classListEl.textContent='No segmentation classes yet.';return;}
-classesOrdered.forEach(cid=>{const meta=classCanvases[cid];const div=document.createElement('div');div.className='class-item';div.textContent=`${meta.name} (id:${cid})`;div.onclick=()=>selectClass(cid,div);classListEl.appendChild(div);});}
+// Stop segmentation when video pauses or ends
+video.addEventListener('pause', ()=> { runningSegmentation = false; setStatus('Video paused. Segmentation paused.'); });
+video.addEventListener('ended', ()=> { runningSegmentation = false; setStatus('Video ended.'); });
 
-// Select class
-function selectClass(cid,el){selectedClass=cid;Array.from(classListEl.children).forEach(ch=>ch.classList.remove('selected'));if(el)el.classList.add('selected');hideLayerBtn.disabled=false;replaceColorBtn.disabled=false;restoreBgBtn.disabled=false;statusEl.textContent='Selected: '+classCanvases[cid].name;}
+// Accessibility: allow pressing Enter on class list to select
+classListEl.addEventListener('keydown', e => {
+  if(e.key === 'Enter' && document.activeElement.classList.contains('class-item')){
+    const idx = Array.from(classListEl.children).indexOf(document.activeElement);
+    const cid = classesOrdered[idx];
+    selectClass(cid, document.activeElement);
+  }
+});
 
-// Layer buttons
-hideLayerBtn.onclick=()=>{if(selectedClass==null)return;classCanvases[selectedClass].visible=!classCanvases[selectedClass].visible;hideLayerBtn.textContent=classCanvases[selectedClass].visible?'Hide Layer':'Show Layer';};
-replaceColorBtn.onclick=()=>{if(selectedClass==null)return;classCanvases[selectedClass].replaceColor=fillColorInput.value;statusEl.textContent='Applied fill color to '+classCanvases[selectedClass].name;};
-restoreBgBtn.onclick=()=>{if(selectedClass==null)return;classCanvases[selectedClass].visible=false;classCanvases[selectedClass].replaceColor=null;statusEl.textContent='Restored background for '+classCanvases[selectedClass].name;};
-
-// Depth grid
-toggleDepthBtn.onclick=()=>{showDepthGrid=!showDepthGrid;toggleDepthBtn.textContent=showDepthGrid?'Depth: ON':'Toggle Depth Grid';};
-function drawDepthGrid(){const w=mainCanvas.width,h=mainCanvas.height;const zones=20;mainCtx.save();mainCtx.globalAlpha=0.22;for(let z=0;z<zones;z++){const fy=1-(z/(zones-1));const y=Math.round((1-fy)*h);const zoneHeight=Math.max(2,Math.round(h/zones));mainCtx.fillStyle=`hsl(${(z*18)%360} 60% ${60-z*1}%)`;mainCtx.fillRect(0,y,w,zoneHeight);}mainCtx.globalAlpha=0.12;mainCtx.strokeStyle='#000';mainCtx.lineWidth=1;for(let r=0;r<=10;r++){const y=Math.round((r/10)*h);mainCtx.beginPath();mainCtx.moveTo(0,y);mainCtx.lineTo(w,y);mainCtx.stroke();}mainCtx.restore();}
-
-// Export (simple MediaRecorder)
-exportBtn.onclick=async()=>{
-  if(!video.src)return;statusEl.textContent='Recording processed video...';progressBar.style.width='0%';
-  const fps=25;const stream=mainCanvas.captureStream(fps);const recChunks=[];const mr=new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp8'});
-  mr.ondataavailable=e=>{if(e.data&&e.data.size)recChunks.push(e.data);};
-  mr.onstop=()=>{
-    const blob=new Blob(recChunks,{type:'video/webm'});const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');a.href=url;a.download=`processed_${Date.now()}.webm`;a.click();
-    statusEl.textContent='Export complete.';progressBar.style.width='100%';
-  };
-  mr.start();
-  const duration=video.duration;video.currentTime=0;video.play();
-  const interval=setInterval(()=>{progressBar.style.width=Math.min(100,(video.currentTime/duration*100))+'%';if(video.ended){clearInterval(interval);mr.stop();}},100);
-};
 </script>
 </body>
 </html>
