@@ -3,55 +3,47 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Video Layer — AI Segmentation + MP4 Export (FFmpeg.wasm)</title>
+<title>Video Layer — Reliable Segmentation + Export</title>
 <style>
   :root{ --bg:#0d1117; --panel:#0f1720; --muted:#8b949e; --accent:#58a6ff; --btn:#238636; }
-  body{ margin:0; font-family:Inter, Arial, sans-serif; background:var(--bg); color:#c9d1d9; display:flex; flex-direction:column; align-items:center; padding:12px; }
-  h1{ color:var(--accent); margin:6px 0 12px 0; font-size:1.1rem; }
-  .toolbar{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; width:100%; max-width:1100px; justify-content:center; }
+  body{ margin:0; font-family:Inter,Arial,sans-serif; background:var(--bg); color:#c9d1d9; display:flex; flex-direction:column; align-items:center; padding:12px; }
+  h1{ color:var(--accent); margin:8px 0; font-size:1.15rem; }
+  .toolbar{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px; width:100%; max-width:1100px; justify-content:center; }
   .control, button, select, input[type=file] { background:var(--panel); color:inherit; border:1px solid #21262d; padding:8px 10px; border-radius:8px; font-weight:600; cursor:pointer; }
   .control:disabled{ opacity:0.5; cursor:not-allowed; }
   #container{ display:grid; grid-template-columns:1fr 320px; gap:12px; width:100%; max-width:1100px; }
   #viewer{ position:relative; background:#000; border-radius:10px; overflow:hidden; }
   video, canvas { width:100%; display:block; max-width:100%; }
   #mainCanvas{ position:absolute; left:0; top:0; pointer-events:none; }
-  #sidebar{ background:var(--panel); padding:12px; border-radius:10px; min-height:320px; }
+  #sidebar{ background:var(--panel); padding:12px; border-radius:10px; min-height:220px; }
   label{ display:block; font-size:0.85rem; color:var(--muted); margin:6px 0; }
   .small{ font-size:0.9rem; color:var(--muted); }
   .btn-row{ display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
-  #progressBar { width:100%; height:10px; background:#0b1116; border-radius:6px; overflow:hidden; margin-top:8px; }
-  #progressBar > div { height:100%; width:0%; background:linear-gradient(90deg,#38bdf8,#60a5fa); }
-  a.link { color:var(--accent); text-decoration:underline; cursor:pointer; }
-  @media (max-width:920px){ #container{ grid-template-columns: 1fr; } }
+  #status{ margin-top:8px; color:var(--muted); font-size:0.9rem; }
+  @media (max-width:920px){ #container{ grid-template-columns:1fr; } #sidebar{ order:2; } }
 </style>
 
-<!-- TF.js + BodyPix + FFmpeg.wasm -->
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix@2.2.0/dist/body-pix.min.js"></script>
-<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.7/dist/ffmpeg.min.js"></script>
+<!-- MediaPipe SelfieSegmentation -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
 </head>
 <body>
-  <h1>Video Layer — AI Segmentation + MP4 Export</h1>
+  <h1>Video Layer — Segmentation + Export (stable)</h1>
 
   <div class="toolbar">
     <input id="videoInput" type="file" accept="video/*" class="control" />
-    <button id="loadModel" class="control">Load AI Model</button>
-    <select id="segQuality" class="control">
-      <option value="multiPerson">High (multi-person)</option>
-      <option value="singlePerson" selected>Balanced (single-person)</option>
-      <option value="fast">Fast (lower quality)</option>
+    <button id="loadSeg" class="control">Load Segmentation</button>
+    <select id="modeSelect" class="control">
+      <option value="original">Original</option>
+      <option value="person">Keep Person Only</option>
+      <option value="blur">Blur Background</option>
+      <option value="transparent">Transparent Background</option>
     </select>
-
-    <label class="small" style="margin-left:6px;">Blur</label>
-    <input id="blurRange" type="range" min="0" max="30" value="12" style="width:140px;" />
-
-    <label class="small">Background</label>
-    <input id="bgInput" type="file" accept="image/*" class="control" />
-
+    <label class="small">Blur level</label>
+    <input id="blurRange" type="range" min="0" max="30" value="12" style="width:140px;">
     <div class="btn-row">
-      <button id="toggleSeg" class="control" disabled>Enable Segmentation</button>
-      <button id="exportBtn" class="control" disabled>Export MP4 (FFmpeg)</button>
-      <button id="stopExportBtn" class="control" disabled>Stop Export</button>
+      <button id="toggleSeg" class="control" disabled>Start Live Seg</button>
+      <button id="exportBtn" class="control" disabled>Start Export (WebM)</button>
+      <button id="downloadBtn" class="control" disabled>Download WebM</button>
     </div>
   </div>
 
@@ -63,107 +55,87 @@
 
     <div id="sidebar">
       <div><strong>Status</strong></div>
-      <div id="statusText" class="small">Model not loaded. Load model, then a video.</div>
-      <div id="progressBar"><div id="progressFill"></div></div>
-
+      <div id="status">Segmentation not loaded.</div>
       <div style="margin-top:12px;">
-        <label>Mode</label>
-        <select id="modeSelect" class="control">
-          <option value="keepPerson">Keep Person Only</option>
-          <option value="blurBg" selected>Blur Background</option>
-          <option value="replaceBg">Replace Background (image)</option>
-          <option value="transparent">Transparent Background</option>
-        </select>
+        <label>Export</label>
+        <div class="small">Recording uses the processed canvas. Recording will start when you click Start Export and play the video. Recording stops automatically when the video ends.</div>
       </div>
-
       <div style="margin-top:12px;">
-        <label>Export Settings</label>
-        <div class="small">Recorded canvas → WebM → transcoded to MP4 (H.264) using FFmpeg.wasm.</div>
-      </div>
-
-      <div style="margin-top:12px;">
-        <button id="downloadMp4" class="control" disabled>Download MP4</button>
+        <label>Preview / Download</label>
+        <div class="btn-row">
+          <button id="previewBtn" class="control" disabled>Preview WebM</button>
+        </div>
       </div>
     </div>
   </div>
 
 <script>
-/* Implementation overview:
- - Load BodyPix model for person segmentation (AI-accurate).
- - Draw live composite to mainCanvas: video frame + segmentation mask effects
- - Support blur or background replacement
- - Use MediaRecorder to record canvas to WebM, then transcode to MP4 with FFmpeg.wasm
- - All runs client-side (offline), with careful async control and status updates.
+/* Reliable, minimal implementation:
+ - SelfieSegmentation via CDN
+ - Live segmentation loop using requestVideoFrameCallback
+ - Offscreen temp canvas used to create masked person layer (avoids weird composite issues)
+ - Export uses MediaRecorder from mainCanvas.captureStream -> WebM
+ - Buttons are enabled/disabled properly and user-visible status updates are provided
 */
 
+// Elements
 const videoInput = document.getElementById('videoInput');
-const loadModelBtn = document.getElementById('loadModel');
-const segQuality = document.getElementById('segQuality');
-const blurRange = document.getElementById('blurRange');
-const bgInput = document.getElementById('bgInput');
+const loadSegBtn = document.getElementById('loadSeg');
 const toggleSegBtn = document.getElementById('toggleSeg');
 const exportBtn = document.getElementById('exportBtn');
-const stopExportBtn = document.getElementById('stopExportBtn');
-const downloadMp4Btn = document.getElementById('downloadMp4');
+const downloadBtn = document.getElementById('downloadBtn');
+const previewBtn = document.getElementById('previewBtn');
 const modeSelect = document.getElementById('modeSelect');
+const blurRange = document.getElementById('blurRange');
 
 const video = document.getElementById('video');
 const mainCanvas = document.getElementById('mainCanvas');
 const mainCtx = mainCanvas.getContext('2d');
 
-const statusText = document.getElementById('statusText');
-const progressFill = document.getElementById('progressFill');
+const statusEl = document.getElementById('status');
 
-let bodypixModel = null;
-let segmentationEnabled = false;
-let segmentationData = null;
-let bgImage = null;
-let modelLoading = false;
+let seg = null;
+let segmentationOn = false;
+let currentMask = null; // segmentationMask image
+let previewLoopToken = null;
 
-// FFmpeg
-const { createFFmpeg, fetchFile } = FFmpeg;
-const ffmpeg = createFFmpeg({ log: true });
-let ffmpegLoaded = false;
-
-// Recording
-let mediaRecorder = null;
+// Recording state
+let recorder = null;
 let recordedChunks = [];
-let recordingInProgress = false;
-let webmBlob = null;
-let mp4Blob = null;
+let webmUrl = null;
 
-// Helpers
-function setStatus(msg){ statusText.textContent = msg; console.log(msg); }
-function setProgress(p){ progressFill.style.width = Math.max(0, Math.min(100,p)) + '%'; }
+// Offscreen temp canvas for compositing masks (same size as main canvas)
+function createTempCanvas(w,h){ const c=document.createElement('canvas'); c.width=w; c.height=h; return c; }
 
-// ---------- Model loading ----------
-loadModelBtn.addEventListener('click', async () => {
-  if (modelLoading) return;
-  modelLoading = true;
-  loadModelBtn.disabled = true;
-  setStatus('Loading BodyPix model (this may take a few seconds)...');
+// Update status helper
+function setStatus(s){ statusEl.textContent = s; console.log(s); }
+
+// Load segmentation model
+loadSegBtn.addEventListener('click', () => {
+  loadSegBtn.disabled = true;
+  setStatus('Loading MediaPipe SelfieSegmentation...');
   try {
-    // Choose architecture/params based on segQuality
-    const quality = segQuality.value;
-    let multiplier=0.75, stride=16, quantBytes=2;
-    if(quality==='multiPerson'){ multiplier=1.0; stride=16; }
-    else if(quality==='singlePerson'){ multiplier=0.75; stride=16; }
-    else { multiplier=0.5; stride=32; }
-    bodypixModel = await bodyPix.load({ architecture: 'MobileNetV1', outputStride: stride, multiplier, quantBytes });
-    setStatus('BodyPix loaded.');
+    seg = new SelfieSegmentation.SelfieSegmentation({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}` });
+    seg.setOptions({ modelSelection: 1 }); // 0 = general, 1 = landscape? modelSelection 1 is more accurate for person
+    seg.onResults(onSegResults);
+    setStatus('SelfieSegmentation ready. Load a video then click "Start Live Seg".');
     toggleSegBtn.disabled = false;
   } catch (err) {
     console.error(err);
-    setStatus('Model load failed: ' + (err.message || err));
-    loadModelBtn.disabled = false;
-    modelLoading = false;
-    return;
+    setStatus('Failed to initialize segmentation: ' + (err.message || err));
+    loadSegBtn.disabled = false;
   }
-  modelLoading = false;
 });
 
-// ---------- Video load ----------
-videoInput.addEventListener('change', (e) => {
+// When segmentation results arrive
+function onSegResults(results){
+  // results.segmentationMask is either an ImageBitmap or an HTMLImageElement/canvas
+  currentMask = results.segmentationMask;
+  // we do not draw here directly, drawing occurs in render loop
+}
+
+// Video input load
+videoInput.addEventListener('change', e => {
   const f = e.target.files[0];
   if(!f) return;
   video.src = URL.createObjectURL(f);
@@ -171,311 +143,198 @@ videoInput.addEventListener('change', (e) => {
   video.onloadedmetadata = () => {
     mainCanvas.width = video.videoWidth;
     mainCanvas.height = video.videoHeight;
-    setStatus(`Video ready — ${video.videoWidth}×${video.videoHeight}.`);
-    toggleSegBtn.disabled = false;
+    setStatus(`Video loaded ${video.videoWidth}×${video.videoHeight}`);
+    toggleSegBtn.disabled = (seg==null);
     exportBtn.disabled = false;
-    downloadMp4Btn.disabled = true;
-    // start render loop
-    requestAnimationFrame(renderLoop);
+    previewBtn.disabled = true;
+    downloadBtn.disabled = true;
+    // start drawing loop (even if segmentation off, show original)
+    startRenderLoop();
   };
 });
 
-// ---------- Background image ----------
-bgInput.addEventListener('change', (e) => {
-  const f = e.target.files[0];
-  if(!f) { bgImage = null; return; }
-  const img = new Image();
-  img.onload = () => {
-    bgImage = img;
-    setStatus('Background image loaded.');
-  };
-  img.src = URL.createObjectURL(f);
-});
-
-// ---------- Toggle segmentation live ----------
+// Start / stop live segmentation
 toggleSegBtn.addEventListener('click', () => {
-  if(!bodypixModel){ setStatus('Load model first.'); return; }
-  segmentationEnabled = !segmentationEnabled;
-  toggleSegBtn.textContent = segmentationEnabled ? 'Segmentation: ON' : 'Segmentation: OFF';
-  setStatus(segmentationEnabled ? 'Segmentation enabled.' : 'Segmentation disabled.');
-  if(segmentationEnabled) requestAnimationFrame(renderLoop);
+  if(!seg) { setStatus('Load segmentation model first.'); return; }
+  segmentationOn = !segmentationOn;
+  toggleSegBtn.textContent = segmentationOn ? 'Stop Live Seg' : 'Start Live Seg';
+  setStatus(segmentationOn ? 'Live segmentation ON' : 'Live segmentation OFF');
+  if(segmentationOn) startSegLoop();
 });
 
-// ---------- Render loop ----------
-let lastSegmentationTime = 0;
-const segEveryNFrames = 1; // how many frames to skip between segmentation calls (1 = every frame)
-let frameCounter = 0;
-
-async function renderLoop(){
-  if(video.readyState < 2) { requestAnimationFrame(renderLoop); return; }
-
-  const w = mainCanvas.width = video.videoWidth;
-  const h = mainCanvas.height = video.videoHeight;
-
-  // Base draw
-  mainCtx.clearRect(0,0,w,h);
-  // If replacing background and mode is replaceBg and bgImage available, draw background first (fit)
-  const mode = modeSelect.value;
-
-  if(mode === 'replaceBg' && bgImage){
-    // draw background image stretched to cover
-    // compute cover scaling
-    const arV = w/h, arI = bgImage.width/bgImage.height;
-    let dw= w, dh = h, dx=0, dy=0;
-    if(arI > arV){ // image wider -> fit height
-      dh = h; dw = Math.round(h * arI); dx = Math.round((w-dw)/2);
-    } else {
-      dw = w; dh = Math.round(w / arI); dy = Math.round((h-dh)/2);
-    }
-    mainCtx.drawImage(bgImage, dx, dy, dw, dh);
-  } else if(mode === 'blurBg' && segmentationEnabled === false){
-    // if blur background requested but segmentation is off, just draw video (no blur)
-    mainCtx.drawImage(video,0,0,w,h);
-  } else {
-    mainCtx.drawImage(video,0,0,w,h);
+// Start segmentation loop: send frames into MediaPipe
+function startSegLoop(){
+  // The render loop will call seg.send({image: video}) each frame if segmentationOn
+  // Ensure video is playing
+  if(video.paused) {
+    video.play().catch(()=>{ /* autoplay may be blocked; user can press play */ });
   }
-
-  // If segmentation enabled and model loaded: every Nth frame run segmentation
-  if(segmentationEnabled && bodypixModel){
-    frameCounter++;
-    const now = performance.now();
-    const throttleMs = 40; // minimum ms between seg calls (to avoid CPU saturation). tweak for perf.
-    const shouldSeg = (frameCounter % segEveryNFrames === 0) && (now - lastSegmentationTime > throttleMs);
-    if(shouldSeg){
-      lastSegmentationTime = now;
-      // run segmentation at a smaller internal resolution for speed then resize mask
-      try {
-        // faster config
-        const segmentation = await bodypixModel.segmentPerson(video, {
-          internalResolution: 'medium',
-          segmentationThreshold: 0.7,
-          maxDetections: 5,
-          scoreThreshold: 0.3,
-          nmsRadius: 20
-        });
-        segmentationData = segmentation; // contains data mask
-      } catch(err){
-        console.error('Segmentation error', err);
-      }
-    }
-  }
-
-  // If we have segmentationData, composite according to mode
-  if(segmentationData){
-    // segmentationData has .data as Float32Array of length w*h with values 0/1 for person mask
-    // BUT bodyPix.segmentPerson returns different structure; we will use bodyPix.toMask to get mask image
-    try {
-      // produce mask canvas
-      const mask = bodyPix.toMask(segmentationData, {r:0,g:0,b:0,a:0}, {r:0,g:0,b:0,a:255});
-      // draw mask to temporary canvas, scaled to full size
-      const tmp = document.createElement('canvas');
-      tmp.width = mask.width; tmp.height = mask.height;
-      tmp.getContext('2d').putImageData(mask,0,0);
-      // scale mask to main canvas size
-      mainCtx.save();
-
-      if(mode === 'keepPerson' || mode === 'transparent'){
-        // draw video but clip with mask
-        // create ImageData of video, then set alpha = 0 outside mask
-        const videoImage = mainCtx.getImageData(0,0,w,h);
-        // draw scaled mask to another canvas and get its alpha
-        const maskCanvas = document.createElement('canvas');
-        maskCanvas.width = w; maskCanvas.height = h;
-        const mctx = maskCanvas.getContext('2d');
-        mctx.drawImage(tmp, 0, 0, w, h);
-        const maskData = mctx.getImageData(0,0,w,h).data;
-        for(let p=0;p<w*h;p++){
-          const off = p*4;
-          const a = maskData[off+3]; // alpha of mask
-          if(a < 128){
-            videoImage.data[off+3] = 0; // make transparent
-          }
-        }
-        mainCtx.putImageData(videoImage,0,0);
-        if(mode === 'keepPerson'){
-          // done — person kept on transparent background (if desired, if user wants keepPerson over black, they can change mode)
-        }
-      } else if(mode === 'blurBg'){
-        // apply blur to background portions: draw blurred version below, then draw person on top
-        const tmpVid = document.createElement('canvas');
-        tmpVid.width = Math.max(1, Math.round(w/12));
-        tmpVid.height = Math.max(1, Math.round(h/12));
-        const tv = tmpVid.getContext('2d');
-        tv.drawImage(video,0,0,tmpVid.width,tmpVid.height);
-        mainCtx.filter = `blur(${parseInt(blurRange.value,10)}px)`;
-        mainCtx.drawImage(tmpVid,0,0,w,h);
-        mainCtx.filter = 'none';
-        // now draw person from original video clipped by mask
-        const maskCanvas2 = document.createElement('canvas');
-        maskCanvas2.width = w; maskCanvas2.height = h;
-        const m2 = maskCanvas2.getContext('2d');
-        m2.drawImage(tmp,0,0,w,h);
-        // use mask as globalCompositeOperation
-        mainCtx.globalCompositeOperation = 'destination-over';
-        // draw original video where mask present
-        mainCtx.save();
-        mainCtx.globalCompositeOperation = 'destination-in';
-        mainCtx.drawImage(tmp,0,0,w,h); // mask
-        mainCtx.restore();
-        // better approach: draw person on top
-        // draw original video, clip with mask
-        const personCanvas = document.createElement('canvas');
-        personCanvas.width = w; personCanvas.height = h;
-        const pc = personCanvas.getContext('2d');
-        pc.drawImage(video,0,0,w,h);
-        pc.globalCompositeOperation = 'destination-in';
-        pc.drawImage(tmp,0,0,w,h);
-        mainCtx.drawImage(personCanvas,0,0);
-        mainCtx.globalCompositeOperation = 'source-over';
-      } else if(mode === 'replaceBg' && bgImage){
-        // we already drew background earlier; now draw person on top by masking
-        const personCanvas = document.createElement('canvas');
-        personCanvas.width = w; personCanvas.height = h;
-        const pc = personCanvas.getContext('2d');
-        pc.drawImage(video,0,0,w,h);
-        pc.globalCompositeOperation = 'destination-in';
-        pc.drawImage(tmp,0,0,w,h);
-        mainCtx.drawImage(personCanvas,0,0);
-      }
-
-      mainCtx.restore();
-    } catch(err){
-      console.error('Composite error', err);
-    }
-  } // end if segmentationData
-
-  // continue loop
-  requestAnimationFrame(renderLoop);
 }
 
-// ---------- Export flow ----------
-exportBtn.addEventListener('click', async () => {
-  if(recordingInProgress) { setStatus('Already exporting.'); return; }
-  if(!mainCanvas) return;
-  setStatus('Starting recording (WebM).');
-  recordedChunks = [];
-  webmBlob = null;
-  mp4Blob = null;
-  downloadMp4Btn.disabled = true;
+// Main render loop: always draws composite into mainCanvas
+function startRenderLoop(){
+  // use requestVideoFrameCallback when available
+  function drawFrame(){
+    if(video.readyState < 2){ previewLoopToken = requestAnimationFrame(drawFrame); return; }
+    const w = mainCanvas.width = video.videoWidth;
+    const h = mainCanvas.height = video.videoHeight;
 
-  // Ensure ffmpeg is loaded early (user may initiate)
-  if(!ffmpegLoaded){
-    setStatus('Loading FFmpeg.wasm (this may take ~10-30s on first run)...');
-    await loadFFmpegWithProgress();
+    // If segmentation is enabled, send current video frame to seg
+    if(segmentationOn && seg && video.readyState >= 2){
+      // send video to segmentation
+      try {
+        seg.send({ image: video });
+      } catch(e){
+        // some browsers may throw if sending too quickly, ignore
+      }
+    }
+
+    // Draw current composite according to mode and currentMask
+    drawCompositeFrame(w,h);
+
+    // schedule next
+    if (video.requestVideoFrameCallback) {
+      try {
+        video.requestVideoFrameCallback(() => drawFrame());
+      } catch (e) {
+        previewLoopToken = requestAnimationFrame(drawFrame);
+      }
+    } else {
+      previewLoopToken = requestAnimationFrame(drawFrame);
+    }
   }
 
-  // Start MediaRecorder on mainCanvas capture stream
+  if(!previewLoopToken) drawFrame();
+}
+
+// Draw composite frame into mainCanvas
+function drawCompositeFrame(w,h){
+  const mode = modeSelect.value;
+  // Draw base video
+  mainCtx.clearRect(0,0,w,h);
+
+  // If no mask yet or segmentation OFF -> just draw video
+  if(!currentMask || !segmentationOn){
+    mainCtx.drawImage(video,0,0,w,h);
+    return;
+  }
+
+  // Use a temp canvas to create person cutout
+  const tmpPerson = createTempCanvas(w,h);
+  const tctx = tmpPerson.getContext('2d');
+
+  // Draw the original video into tctx
+  tctx.drawImage(video,0,0,w,h);
+
+  // Apply mask: destination-in keeps pixels where mask exists
+  tctx.globalCompositeOperation = 'destination-in';
+  // draw mask (currentMask may be smaller - scale to full canvas)
+  tctx.drawImage(currentMask, 0, 0, w, h);
+  tctx.globalCompositeOperation = 'source-over';
+
+  if(mode === 'person' || mode === 'transparent'){
+    // Person-only or transparent: clear main canvas, then draw masked person
+    mainCtx.clearRect(0,0,w,h);
+    mainCtx.drawImage(tmpPerson,0,0,w,h);
+    // if person mode (not transparent), place black background behind (optional)
+    if(mode === 'person'){
+      // person on black background is already drawn because canvas background is black; leave as-is
+    }
+    // transparent leaves alpha where background removed
+    return;
+  }
+
+  if(mode === 'blur'){
+    // blur background: draw blurred video as base, then draw sharp person
+    // cheap blur: scale down & scale up + canvas filter if available
+    // first draw blurred background
+    const blurAmount = parseInt(blurRange.value,10) || 12;
+    // create small canvas
+    const small = createTempCanvas(Math.max(1,Math.round(w/12)), Math.max(1,Math.round(h/12)));
+    const sc = small.getContext('2d');
+    sc.drawImage(video,0,0,small.width, small.height);
+    mainCtx.save();
+    // use canvas filter if supported
+    mainCtx.filter = `blur(${blurAmount}px)`;
+    mainCtx.drawImage(small,0,0,w,h);
+    mainCtx.filter = 'none';
+    mainCtx.restore();
+    // then draw sharp person from tmpPerson on top
+    mainCtx.drawImage(tmpPerson,0,0,w,h);
+    return;
+  }
+
+  // default (original): draw original video; optionally overlay person outline? We'll just draw original
+  mainCtx.drawImage(video,0,0,w,h);
+}
+
+// Exporting: record mainCanvas captureStream with MediaRecorder
+exportBtn.addEventListener('click', async () => {
+  if(!video.src){ setStatus('Load a video before exporting.'); return; }
+  if(recordedChunks.length) recordedChunks = []; // clear old
+  setStatus('Preparing to record. Start playing the video to capture, or press Play.');
+  downloadBtn.disabled = true;
+  previewBtn.disabled = true;
+
   const fps = 25;
   const stream = mainCanvas.captureStream(fps);
-  mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
-  mediaRecorder.ondataavailable = (e) => { if(e.data && e.data.size) recordedChunks.push(e.data); };
-  mediaRecorder.onstop = async () => {
-    webmBlob = new Blob(recordedChunks, { type: 'video/webm' });
-    setStatus('Recording complete — now transcoding to MP4 (FFmpeg.wasm).');
-    setProgress(5);
-    try {
-      await transcodeWebMtoMP4(webmBlob);
-      setStatus('Transcode complete. MP4 ready.');
-      downloadMp4Btn.disabled = false;
-      setProgress(100);
-    } catch(err){
-      console.error(err);
-      setStatus('Transcode failed: ' + err.message);
-    } finally {
-      recordingInProgress = false;
-      stopExportBtn.disabled = true;
-    }
+  recordedChunks = [];
+  try {
+    recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+  } catch(e){
+    recorder = new MediaRecorder(stream);
+  }
+  recorder.ondataavailable = e => { if(e.data && e.data.size) recordedChunks.push(e.data); };
+  recorder.onstop = () => {
+    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+    if(webmUrl) URL.revokeObjectURL(webmUrl);
+    webmUrl = URL.createObjectURL(blob);
+    downloadBtn.disabled = false;
+    previewBtn.disabled = false;
+    setStatus('Recording finished — preview or download available.');
   };
 
-  mediaRecorder.start();
-  recordingInProgress = true;
-  stopExportBtn.disabled = false;
-  setStatus('Recording... play the video to capture full length (or click stop).');
+  recorder.start();
+  setStatus('Recording... press Play on the video to capture and wait until it ends. Recording stops automatically when the video ends.');
 
-  // Auto-play to record whole video: start from 0
+  // ensure we start at 0
   try {
     video.currentTime = 0;
     await video.play();
-  } catch(e){
-    console.warn('Autoplay prevented, please press play on video.');
-    setStatus('Recording started — press play on the video to capture.');
+  } catch(err){
+    setStatus('Autoplay blocked — press Play on the video to begin recording.');
   }
+
+  // stop recorder when video ends
+  const onEnded = () => {
+    if(recorder && recorder.state === 'recording') recorder.stop();
+    video.removeEventListener('ended', onEnded);
+  };
+  video.addEventListener('ended', onEnded);
 });
 
-// stop export
-stopExportBtn.addEventListener('click', () => {
-  if(mediaRecorder && recordingInProgress){
-    mediaRecorder.stop();
-    setStatus('Stopping recording...');
-  } else setStatus('No active recording.');
-});
-
-// download mp4
-downloadMp4Btn.addEventListener('click', () => {
-  if(!mp4Blob) { setStatus('No MP4 ready.'); return; }
+// Download & preview handlers
+downloadBtn.addEventListener('click', ()=>{
+  if(!webmUrl){ setStatus('Nothing to download.'); return; }
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(mp4Blob);
-  a.download = `processed_${Date.now()}.mp4`;
+  a.href = webmUrl;
+  a.download = `processed_${Date.now()}.webm`;
   a.click();
 });
 
-// ---------- FFmpeg helpers ----------
-async function loadFFmpegWithProgress(){
-  try {
-    setStatus('Downloading FFmpeg core...');
-    await ffmpeg.load();
-    ffmpegLoaded = true;
-    setStatus('FFmpeg loaded.');
-  } catch(err){
-    console.error('FFmpeg load failed', err);
-    throw err;
-  }
-}
-
-async function transcodeWebMtoMP4(webm) {
-  if(!ffmpegLoaded) await loadFFmpegWithProgress();
-  // ensure file names
-  const inputName = 'input.webm';
-  const outputName = 'output.mp4';
-  // write file to ffmpeg FS
-  setProgress(20);
-  ffmpeg.FS('writeFile', inputName, await fetchFile(webm));
-  setProgress(35);
-  // run ffmpeg to convert: use libx264 (might be slower). Use -preset veryfast to speed up
-  // Note: ffmpeg.wasm supports libx264 only in WASM builds that include that codec; if unsupported fallback to webm.
-  try {
-    // Try H.264 encode
-    await ffmpeg.run('-i', inputName, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', outputName);
-  } catch (err) {
-    // fallback: generate MP4 via copy if libx264 not available, or convert to mp4 container from webm (try mp4 with copy)
-    console.warn('libx264 failed, falling back to mp4 remux (may not play everywhere).', err);
-    await ffmpeg.run('-i', inputName, '-c', 'copy', outputName);
-  }
-  setProgress(80);
-  const data = ffmpeg.FS('readFile', outputName);
-  mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
-  setProgress(95);
-  // cleanup FS entries to free memory
-  try { ffmpeg.FS('unlink', inputName); ffmpeg.FS('unlink', outputName); } catch(e){}
-  setProgress(100);
-}
-
-// ---------- UI: change mode updates ----------
-modeSelect.addEventListener('change', () => {
-  if(modeSelect.value === 'replaceBg'){
-    if(!bgImage) setStatus('Select a background image to use Replace Background mode.');
-  }
+previewBtn.addEventListener('click', ()=>{
+  if(!webmUrl){ setStatus('No preview available.'); return; }
+  // open preview in a new window or replace video src temporarily
+  const win = window.open('');
+  // embed a video element
+  win.document.write(`<video controls autoplay style="width:100%"></video>`);
+  const v = win.document.querySelector('video');
+  v.src = webmUrl;
 });
 
-// ---------- small utility: fetchFile wrapper for ffmpeg lib (already imported) ----------
-async function fetchFile(blobOrFile){
-  // FFmpeg's fetchFile helper is available in global FFmpeg lib
-  return await FFmpeg.fetchFile(blobOrFile);
-}
-
-// Init
-setStatus('Ready. Load model then a video. Note: FFmpeg will be downloaded only when you export.');
-setProgress(0);
+// Ensure render loop starts when page is ready
+startRenderLoop();
+setStatus('Ready. Load segmentation model and a video, then enable live segmentation and use the modes.');
 
 </script>
 </body>
