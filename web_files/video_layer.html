@@ -3,119 +3,200 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Video Layer Processor</title>
+<title>Video Layer - Object Detection</title>
 <link rel="stylesheet" href="style.css">
 <style>
-  :root {
-    color-scheme: dark;
-  }
   body {
-    margin: 0;
-    background: #0d1117;
-    color: #f0f6fc;
+    background: #0e0e0e;
+    color: #f0f0f0;
     font-family: system-ui, sans-serif;
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 1rem;
-    min-height: 100vh;
+    margin: 0;
+    padding: 10px;
   }
-  header {
-    text-align: center;
-    margin-bottom: 0.5rem;
-  }
+
   h1 {
-    color: #58a6ff;
-    font-size: 1.3rem;
-    margin: 0.3rem 0;
+    font-size: 1.3em;
+    text-align: center;
+    margin-bottom: 10px;
   }
-  #videoContainer, #outputContainer {
-    width: 100%;
-    max-width: 480px;
-    margin-bottom: 1rem;
-    position: relative;
-  }
+
   video, canvas {
     width: 100%;
+    max-width: 500px;
     border-radius: 10px;
-    background: #000;
-    display: block;
+    background: #111;
   }
-  .controls {
+
+  #canvas {
     position: relative;
+    margin-top: 8px;
+  }
+
+  .controls {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
     justify-content: center;
-    background: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 10px;
-    padding: 0.75rem;
-    width: 100%;
-    max-width: 480px;
-    box-sizing: border-box;
+    margin-top: 10px;
+    gap: 8px;
   }
-  button, input[type="file"], input[type="range"] {
-    flex: 1 1 45%;
-    min-width: 120px;
-    padding: 0.6rem;
-    font-size: 1rem;
-    background: #238636;
+
+  .controls button {
+    background: #1f1f1f;
     color: #fff;
     border: none;
-    border-radius: 8px;
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 0.9em;
+    cursor: pointer;
+    transition: background 0.2s ease;
   }
-  button:disabled {
-    background: #30363d;
-    color: #999;
+
+  .controls button:hover:not(:disabled) {
+    background: #444;
   }
-  #maskOpacityContainer {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.4rem;
-    width: 100%;
+
+  .controls button:disabled {
+    opacity: 0.5;
   }
-  #maskOpacity {
-    width: 150px;
-  }
+
   #status {
-    font-size: 0.9rem;
-    color: #8b949e;
     text-align: center;
-    margin-top: 0.5rem;
-    word-break: break-word;
+    font-size: 0.9em;
+    margin-top: 8px;
+    color: #aaa;
+  }
+
+  #progressBar {
+    width: 90%;
+    max-width: 500px;
+    height: 6px;
+    margin-top: 10px;
+    border-radius: 3px;
+    background: #333;
+    overflow: hidden;
+  }
+
+  #progressFill {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, #5df, #0df);
+    transition: width 0.2s ease;
+  }
+
+  @media (max-width: 600px) {
+    .controls {
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+    }
+
+    .controls button {
+      width: 90%;
+    }
   }
 </style>
 </head>
 <body>
-<header>
-  <h1>Video Layer Processor</h1>
-  <p>Load, process, and save your video with object masking.</p>
-</header>
+<h1>🎥 Advanced Object Layer Processor</h1>
 
-<div id="videoContainer">
-  <input type="file" id="videoInput" accept="video/*">
-  <video id="video" controls playsinline></video>
-</div>
+<input type="file" id="videoInput" accept="video/*">
 
-<div id="outputContainer">
-  <canvas id="canvas"></canvas>
-</div>
+<video id="video" controls playsinline></video>
+<canvas id="canvas"></canvas>
 
 <div class="controls">
   <button id="startBtn">Start Processing</button>
   <button id="stopBtn" disabled>Stop</button>
-  <button id="saveBtn" disabled>Save</button>
-
-  <div id="maskOpacityContainer">
-    <label for="maskOpacity">Mask Opacity:</label>
-    <input type="range" id="maskOpacity" min="0" max="1" step="0.05" value="0.5">
-  </div>
+  <button id="saveBtn" disabled>Save Final</button>
 </div>
 
+<div id="progressBar"><div id="progressFill"></div></div>
 <p id="status">Ready.</p>
 
 <script src="detector.js"></script>
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const saveBtn = document.getElementById('saveBtn');
+const progressFill = document.getElementById('progressFill');
+
+let processing = false;
+let processedFrames = 0;
+
+document.getElementById('videoInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  video.src = url;
+  video.load();
+  video.onloadeddata = () => {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    statusEl.textContent = "✅ Video loaded successfully.";
+  };
+});
+
+startBtn.onclick = async () => {
+  if (!video.src) return;
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  saveBtn.disabled = true;
+  statusEl.textContent = "🧠 Initializing detector...";
+  await Detector.init();
+  processing = true;
+  processedFrames = 0;
+  statusEl.textContent = "⚙️ Processing video...";
+  video.play();
+  processLoop();
+};
+
+stopBtn.onclick = () => {
+  processing = false;
+  video.pause();
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  saveBtn.disabled = false;
+  statusEl.textContent = "⏸ Processing stopped.";
+};
+
+saveBtn.onclick = () => {
+  const a = document.createElement("a");
+  a.download = "processed_frame.png";
+  a.href = canvas.toDataURL("image/png");
+  a.click();
+  statusEl.textContent = "💾 Saved current frame.";
+};
+
+async function processLoop() {
+  if (!processing || video.paused || video.ended) return;
+  
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  
+  const mask = await Detector.processFrame(frame);
+  if (mask) Detector.applyMask(ctx, mask);
+  
+  processedFrames++;
+  const progress = Math.min((video.currentTime / video.duration) * 100, 100);
+  progressFill.style.width = `${progress}%`;
+
+  if (!video.ended && processing) {
+    requestAnimationFrame(processLoop);
+  } else {
+    processing = false;
+    saveBtn.disabled = false;
+    stopBtn.disabled = true;
+    startBtn.disabled = false;
+    statusEl.textContent = "✅ Processing complete.";
+  }
+}
+</script>
 </body>
 </html>
