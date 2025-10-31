@@ -3,36 +3,39 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Video Layer - Object Detection</title>
+<title>Video Layer - Object Detection Export</title>
 <link rel="stylesheet" href="style.css">
 <style>
   body {
-    background: #0e0e0e;
+    background: #0b0b0b;
     color: #f0f0f0;
     font-family: system-ui, sans-serif;
+    margin: 0;
+    padding: 10px;
     display: flex;
     flex-direction: column;
     align-items: center;
-    margin: 0;
-    padding: 10px;
   }
 
   h1 {
-    font-size: 1.3em;
     text-align: center;
-    margin-bottom: 10px;
+    font-size: 1.2em;
+    margin: 12px 0;
+  }
+
+  input[type=file] {
+    margin: 6px 0;
   }
 
   video, canvas {
     width: 100%;
-    max-width: 500px;
-    border-radius: 10px;
+    max-width: 480px;
+    border-radius: 8px;
     background: #111;
   }
 
   #canvas {
-    position: relative;
-    margin-top: 8px;
+    margin-top: 6px;
   }
 
   .controls {
@@ -43,35 +46,27 @@
     gap: 8px;
   }
 
-  .controls button {
-    background: #1f1f1f;
+  button {
+    background: #222;
     color: #fff;
     border: none;
     padding: 10px 14px;
     border-radius: 6px;
-    font-size: 0.9em;
     cursor: pointer;
-    transition: background 0.2s ease;
+    font-size: 0.9em;
   }
 
-  .controls button:hover:not(:disabled) {
+  button:hover:not(:disabled) {
     background: #444;
   }
 
-  .controls button:disabled {
-    opacity: 0.5;
-  }
-
-  #status {
-    text-align: center;
-    font-size: 0.9em;
-    margin-top: 8px;
-    color: #aaa;
+  button:disabled {
+    opacity: 0.6;
   }
 
   #progressBar {
     width: 90%;
-    max-width: 500px;
+    max-width: 480px;
     height: 6px;
     margin-top: 10px;
     border-radius: 3px;
@@ -82,17 +77,22 @@
   #progressFill {
     width: 0%;
     height: 100%;
-    background: linear-gradient(90deg, #5df, #0df);
+    background: linear-gradient(90deg, #09f, #3ff);
     transition: width 0.2s ease;
+  }
+
+  #status {
+    text-align: center;
+    font-size: 0.9em;
+    margin-top: 8px;
+    color: #aaa;
   }
 
   @media (max-width: 600px) {
     .controls {
       flex-direction: column;
-      align-items: center;
       width: 100%;
     }
-
     .controls button {
       width: 90%;
     }
@@ -100,7 +100,7 @@
 </style>
 </head>
 <body>
-<h1>🎥 Advanced Object Layer Processor</h1>
+<h1>🎞️ Advanced Object Layer Processor</h1>
 
 <input type="file" id="videoInput" accept="video/*">
 
@@ -108,27 +108,33 @@
 <canvas id="canvas"></canvas>
 
 <div class="controls">
-  <button id="startBtn">Start Processing</button>
+  <button id="startBtn">Start</button>
   <button id="stopBtn" disabled>Stop</button>
-  <button id="saveBtn" disabled>Save Final</button>
+  <button id="saveBtn" disabled>Save Video</button>
 </div>
 
 <div id="progressBar"><div id="progressFill"></div></div>
 <p id="status">Ready.</p>
 
+<!-- OpenCV + FFmpeg.js -->
+<script src="https://docs.opencv.org/4.x/opencv.js"></script>
+<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js"></script>
 <script src="detector.js"></script>
+
 <script>
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
-const statusEl = document.getElementById('status');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const saveBtn = document.getElementById('saveBtn');
 const progressFill = document.getElementById('progressFill');
+const statusEl = document.getElementById('status');
 
 let processing = false;
-let processedFrames = 0;
+let recordedFrames = [];
+let ffmpeg = null;
+let fps = 30;
 
 document.getElementById('videoInput').addEventListener('change', e => {
   const file = e.target.files[0];
@@ -139,6 +145,7 @@ document.getElementById('videoInput').addEventListener('change', e => {
   video.onloadeddata = () => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
+    fps = Math.round(video.duration ? video.videoWidth / video.videoHeight * 15 : 30);
     statusEl.textContent = "✅ Video loaded successfully.";
   };
 });
@@ -148,13 +155,13 @@ startBtn.onclick = async () => {
   startBtn.disabled = true;
   stopBtn.disabled = false;
   saveBtn.disabled = true;
-  statusEl.textContent = "🧠 Initializing detector...";
+  statusEl.textContent = "🧠 Initializing...";
   await Detector.init();
   processing = true;
-  processedFrames = 0;
-  statusEl.textContent = "⚙️ Processing video...";
+  recordedFrames = [];
+  video.currentTime = 0;
   video.play();
-  processLoop();
+  processFrameLoop();
 };
 
 stopBtn.onclick = () => {
@@ -166,36 +173,54 @@ stopBtn.onclick = () => {
   statusEl.textContent = "⏸ Processing stopped.";
 };
 
-saveBtn.onclick = () => {
-  const a = document.createElement("a");
-  a.download = "processed_frame.png";
-  a.href = canvas.toDataURL("image/png");
+saveBtn.onclick = async () => {
+  statusEl.textContent = "💾 Encoding video (this may take a while)...";
+  progressFill.style.width = "0%";
+
+  if (!ffmpeg) {
+    ffmpeg = FFmpeg.createFFmpeg({ log: false });
+    await ffmpeg.load();
+  }
+
+  const framePromises = recordedFrames.map((frame, i) => {
+    const name = `frame_${String(i).padStart(4, '0')}.png`;
+    ffmpeg.FS('writeFile', name, frame);
+    return name;
+  });
+
+  await ffmpeg.run('-framerate', `${fps}`, '-i', 'frame_%04d.png', '-pix_fmt', 'yuv420p', 'output.mp4');
+  const data = ffmpeg.FS('readFile', 'output.mp4');
+  const blob = new Blob([data.buffer], { type: 'video/mp4' });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'processed_video.mp4';
   a.click();
-  statusEl.textContent = "💾 Saved current frame.";
+
+  ffmpeg.FS('unlink', 'output.mp4');
+  framePromises.forEach(n => ffmpeg.FS('unlink', n));
+
+  statusEl.textContent = "✅ Video saved successfully!";
+  progressFill.style.width = "100%";
 };
 
-async function processLoop() {
+async function processFrameLoop() {
   if (!processing || video.paused || video.ended) return;
-  
+
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  
+
   const mask = await Detector.processFrame(frame);
   if (mask) Detector.applyMask(ctx, mask);
-  
-  processedFrames++;
-  const progress = Math.min((video.currentTime / video.duration) * 100, 100);
-  progressFill.style.width = `${progress}%`;
 
-  if (!video.ended && processing) {
-    requestAnimationFrame(processLoop);
-  } else {
-    processing = false;
-    saveBtn.disabled = false;
-    stopBtn.disabled = true;
-    startBtn.disabled = false;
-    statusEl.textContent = "✅ Processing complete.";
-  }
+  const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  recordedFrames.push(buf);
+
+  progressFill.style.width = `${(video.currentTime / video.duration) * 100}%`;
+
+  requestAnimationFrame(processFrameLoop);
 }
 </script>
 </body>
