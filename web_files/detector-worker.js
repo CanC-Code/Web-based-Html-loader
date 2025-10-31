@@ -1,60 +1,44 @@
-let cvReady = false;
-let prevGray = null;
+self.importScripts('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js');
+self.importScripts('https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@0.2.2/dist/deeplab.min.js');
 
-self.importScripts("https://docs.opencv.org/4.x/opencv.js");
+let model = null;
 
-self.Module = {
-  onRuntimeInitialized() {
-    cvReady = true;
-    console.log("OpenCV.js worker ready");
-  }
-};
+self.onmessage = async (e) => {
+  const { type, frameData, width, height } = e.data;
 
-self.onmessage = e => {
-  if (!cvReady) return;
-  const { frame, mode } = e.data;
-  processFrame(frame, mode);
-};
-
-function processFrame(frame, mode) {
-  const src = cv.matFromImageData(frame);
-  const gray = new cv.Mat();
-  const mask = new cv.Mat();
-
-  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-
-  if (mode === "motion") {
-    if (prevGray) {
-      const diff = new cv.Mat();
-      cv.absdiff(gray, prevGray, diff);
-      cv.threshold(diff, mask, 25, 255, cv.THRESH_BINARY);
-      cv.medianBlur(mask, mask, 5);
-      diff.delete();
+  if(type === 'init'){
+    if(model) return postMessage({ type:'ready' });
+    try {
+      model = await deeplab.load({ base: 'pascal', quantizationBytes: 2 });
+      postMessage({ type:'ready' });
+    } catch(err){
+      postMessage({ type:'error', message: err.message });
     }
-  } else if (mode === "color") {
-    const hsv = new cv.Mat();
-    cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
-    cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
-    const low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [35, 50, 50, 0]);
-    const high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [85, 255, 255, 255]);
-    cv.inRange(hsv, low, high, mask);
-    hsv.delete(); low.delete(); high.delete();
-  } else if (mode === "edges") {
-    cv.Canny(gray, mask, 100, 200);
-  } else if (mode === "custom") {
-    // user’s hand mask drawn in UI — skip auto-processing
-    mask.setTo(new cv.Scalar(0));
+    return;
   }
 
-  if (prevGray) prevGray.delete();
-  prevGray = gray.clone();
+  if(type === 'process'){
+    if(!model) return;
+    try {
+      const off = new OffscreenCanvas(width, height);
+      const ctx = off.getContext('2d');
+      const imgData = new ImageData(new Uint8ClampedArray(frameData), width, height);
+      ctx.putImageData(imgData, 0, 0);
 
-  self.postMessage({
-    type: 'mask',
-    mask: mask.data,
-    w: mask.cols,
-    h: mask.rows
-  }, [mask.data.buffer]);
+      const seg = await model.segment(off);
 
-  src.delete(); gray.delete(); mask.delete();
-}
+      const mask = new Uint8ClampedArray(width*height*4);
+      for(let i=0;i<width*height;i++){
+        const alpha = seg.segmentationMap[i]>0?255:0;
+        mask[i*4] = 255;
+        mask[i*4+1] = 255;
+        mask[i*4+2] = 255;
+        mask[i*4+3] = alpha;
+      }
+
+      postMessage({ type:'mask', maskData: mask.buffer, width, height }, [mask.buffer]);
+    } catch(err){
+      postMessage({ type:'error', message: err.message });
+    }
+  }
+};
