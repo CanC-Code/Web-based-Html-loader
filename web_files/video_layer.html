@@ -1,43 +1,116 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Video Layer — Stable Background Remover</title>
-<link rel="stylesheet" href="style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Background Remover</title>
+<style>
+  body {
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2em;
+  }
+  h1 { color: #58a6ff; margin-bottom: 1em; }
+  #controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 1em; margin-bottom: 1em; }
+  button, input[type=file], select {
+    background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+    padding: 0.5em 1em; border-radius: 8px; cursor: pointer;
+  }
+  button:hover, select:hover, input[type=file]:hover { background: #30363d; }
+  video, canvas {
+    width: 90%; max-width: 800px; border-radius: 10px;
+    margin-top: 1em; border: 2px solid #30363d;
+  }
+  #status { margin-top: 1em; font-size: 0.9rem; color: #8b949e; }
+</style>
 </head>
 <body>
-<header>
-  <h1>Video Layer — Background Remover</h1>
-  <p class="lead">Select a video and remove its background with AI segmentation.</p>
-</header>
 
-<main>
-  <section class="mediaBox">
-    <div class="mediaInner">
-      <input id="videoInput" type="file" accept="video/*">
-      <video id="inputVideo" playsinline controls></video>
-      <canvas id="outputCanvas"></canvas>
-    </div>
-  </section>
+<h1>🎥 Background Remover (OpenCV.js)</h1>
 
-  <section class="controls">
-    <button id="startBtn">Start</button>
-    <button id="stopBtn" disabled>Stop</button>
-    <button id="saveBtn" disabled>Save</button>
-    <select id="modeSelect" class="aux">
-      <option value="person">People (AI)</option>
-      <option value="motion">Motion (OpenCV)</option>
-    </select>
-  </section>
+<div id="controls">
+  <input type="file" id="videoInput" accept="video/*">
+  <select id="modeSelect">
+    <option value="motion">Motion</option>
+    <option value="all">Edges</option>
+    <option value="threshold">Simple Threshold</option>
+  </select>
+  <button id="startBtn">Start Processing</button>
+  <button id="stopBtn">Stop</button>
+</div>
 
-  <div class="progressWrap">
-    <div class="progress"><div id="progressFill"></div></div>
-  </div>
+<video id="video" controls></video>
+<canvas id="output"></canvas>
+<div id="status">Status: Waiting for video...</div>
 
-  <div id="status">Ready.</div>
-</main>
+<script>
+let video = document.getElementById("video");
+let canvas = document.getElementById("output");
+let ctx = canvas.getContext("2d");
+let status = document.getElementById("status");
 
-<script src="detector.js"></script>
+let worker = new Worker("detector-worker.js");
+let mode = document.getElementById("modeSelect").value;
+let processing = false;
+
+worker.onmessage = (e) => {
+  if (e.data.type === "log") {
+    status.textContent = "Log: " + e.data.msg;
+  } else if (e.data.type === "mask") {
+    const { maskData, width, height } = e.data;
+    const mask = new ImageData(new Uint8ClampedArray(maskData), width, height);
+    ctx.putImageData(mask, 0, 0);
+  }
+};
+
+document.getElementById("modeSelect").onchange = e => mode = e.target.value;
+
+document.getElementById("videoInput").onchange = e => {
+  const file = e.target.files[0];
+  if (file) {
+    const url = URL.createObjectURL(file);
+    video.src = url;
+    status.textContent = "Loaded video: " + file.name;
+  }
+};
+
+document.getElementById("startBtn").onclick = () => {
+  if (!video.src) {
+    alert("Please select a video file first.");
+    return;
+  }
+  processing = true;
+  processVideoFrame();
+};
+
+document.getElementById("stopBtn").onclick = () => {
+  processing = false;
+  status.textContent = "Processing stopped.";
+};
+
+function processVideoFrame() {
+  if (!processing) return;
+  if (video.paused || video.ended) {
+    requestAnimationFrame(processVideoFrame);
+    return;
+  }
+
+  // Draw current frame on canvas
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  // Send frame to worker
+  const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  worker.postMessage({ type: "process", frame, mode });
+
+  requestAnimationFrame(processVideoFrame);
+}
+</script>
+
 </body>
 </html>
