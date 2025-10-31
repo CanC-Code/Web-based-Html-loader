@@ -1,131 +1,78 @@
-// detector.js — guaranteed working global MediaPipe loader (no import issues)
-
+// detector.js — Stable MediaPipe integration for video_layer.html
 const Detector = (function () {
-  let selfieSegmentation = null;
-  let initialized = false;
-  let mode = 'human';
-  let running = false;
-  let latestMask = null;
-  let lastBitmap = null;
-
-  // Load script dynamically if not already loaded
-  function loadScript(url) {
-    return new Promise((resolve, reject) => {
-      if (document.querySelector(`script[src="${url}"]`)) return resolve();
-      const script = document.createElement("script");
-      script.src = url;
-      script.onload = resolve;
-      script.onerror = reject;
-      document.head.appendChild(script);
-    });
-  }
+  let seg = null;
+  let mask = null;
+  let canvasTmp = null;
+  let ctxTmp = null;
+  let ready = false;
+  let processing = false;
 
   async function init(options = {}) {
-    mode = options.mode || 'human';
-
-    // Load MediaPipe SelfieSegmentation if not present
-    if (typeof SelfieSegmentation === 'undefined') {
-      await loadScript("https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js");
+    if (typeof SelfieSegmentation === "undefined") {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = "https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js";
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
     }
 
-    // Instantiate global class
-    if (typeof SelfieSegmentation === 'function') {
-      selfieSegmentation = new SelfieSegmentation({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
-      });
-    } else if (typeof SelfieSegmentation?.SelfieSegmentation === 'function') {
-      selfieSegmentation = new SelfieSegmentation.SelfieSegmentation({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
-      });
-    } else {
-      throw new Error("Failed to load MediaPipe SelfieSegmentation constructor");
-    }
+    seg = new SelfieSegmentation({
+      locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`
+    });
+    seg.setOptions({ modelSelection: 1 });
 
-    selfieSegmentation.setOptions({ modelSelection: 1 });
-
-    selfieSegmentation.onResults((results) => {
-      if (results.segmentationMask) {
-        createImageBitmap(results.segmentationMask).then((bitmap) => {
-          if (lastBitmap) lastBitmap.close();
-          lastBitmap = bitmap;
-          latestMask = bitmap;
-          running = false;
-        });
-      } else {
-        running = false;
-      }
+    seg.onResults(r => {
+      mask = r.segmentationMask || null;
+      processing = false;
     });
 
-    initialized = true;
-    console.log("✅ Detector initialized successfully");
+    canvasTmp = document.createElement("canvas");
+    ctxTmp = canvasTmp.getContext("2d");
+    ready = true;
+    console.log("[Detector] Initialized successfully");
     return true;
   }
 
-  async function processFrame(imageData) {
-    if (!initialized || !selfieSegmentation) return null;
-    if (running) return latestMask; // prevent reentry
-    running = true;
+  async function processFrame(frame, opts = {}) {
+    if (!ready || !seg) return null;
+    if (processing) return mask;
+    processing = true;
 
-    const tmpCanvas = document.createElement('canvas');
-    tmpCanvas.width = imageData.width;
-    tmpCanvas.height = imageData.height;
-    const tmpCtx = tmpCanvas.getContext('2d');
-    tmpCtx.putImageData(imageData, 0, 0);
+    // draw frame into an offscreen canvas
+    canvasTmp.width = frame.width;
+    canvasTmp.height = frame.height;
+    ctxTmp.putImageData(frame, 0, 0);
 
     try {
-      await selfieSegmentation.send({ image: tmpCanvas });
+      await seg.send({ image: canvasTmp });
     } catch (err) {
-      console.error("Segmentation send failed:", err);
-      running = false;
+      console.error("[Detector] processFrame error:", err);
+      processing = false;
     }
 
-    return latestMask;
+    return mask;
   }
 
-  async function applyMask(ctx, mask) {
+  function applyMask(ctx, mask) {
     if (!mask) return;
-
     const w = ctx.canvas.width;
     const h = ctx.canvas.height;
 
-    const maskCanvas = document.createElement('canvas');
-    maskCanvas.width = mask.width;
-    maskCanvas.height = mask.height;
-    const maskCtx = maskCanvas.getContext('2d');
-    maskCtx.drawImage(mask, 0, 0);
+    // Draw original frame first
+    ctx.globalCompositeOperation = "source-over";
+    ctx.drawImage(mask, 0, 0, w, h);
 
-    const maskData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
-    const frameData = ctx.getImageData(0, 0, w, h);
+    // Clip out background — use destination-in to keep people only
+    ctx.save();
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.drawImage(mask, 0, 0, w, h);
+    ctx.restore();
 
-    const mw = maskCanvas.width;
-    const mh = maskCanvas.height;
-
-    // Create a smooth, feathered alpha mask
-    const output = ctx.createImageData(w, h);
-    for (let y = 0; y < h; y++) {
-      const my = Math.floor((y / h) * mh);
-      for (let x = 0; x < w; x++) {
-        const mx = Math.floor((x / w) * mw);
-        const mi = (my * mw + mx) * 4;
-        const alpha = maskData.data[mi] / 255;
-        const fi = (y * w + x) * 4;
-
-        // Apply soft alpha edge
-        output.data[fi] = frameData.data[fi];
-        output.data[fi + 1] = frameData.data[fi + 1];
-        output.data[fi + 2] = frameData.data[fi + 2];
-        output.data[fi + 3] = Math.round(alpha * 255);
-      }
-    }
-
-    ctx.clearRect(0, 0, w, h);
-    ctx.putImageData(output, 0, 0);
+    // Optionally: soften edges slightly
+    // (disabled for now to keep it fast)
   }
 
-  return {
-    init,
-    processFrame,
-    applyMask,
-    _status: () => ({ initialized, running })
-  };
+  return { init, processFrame, applyMask };
 })();
