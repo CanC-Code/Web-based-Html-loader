@@ -1,37 +1,33 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Video Layer - Live AI Editing</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Video Layer — Live AI Editing</title>
 <style>
-  :root{ --bg:#0d1117; --panel:#0f1720; --muted:#8b949e; --accent:#58a6ff; --btn:#238636; }
-  body{ margin:0; font-family:Inter,Arial,sans-serif; background:var(--bg); color:#c9d1d9; display:flex; flex-direction:column; align-items:center; padding:1rem; }
-  h1{ color:var(--accent); margin:0 0 0.75rem 0; font-size:1.2rem; }
-  .topbar{ display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center; justify-content:center; margin-bottom:0.75rem; width:100%; max-width:1100px; }
-  .control, input[type=file]{ background:var(--panel); color:inherit; border:1px solid #21262d; padding:8px 12px; border-radius:8px; font-weight:600; cursor:pointer; }
-  #layout{ display:grid; grid-template-columns:1fr 320px; gap:14px; width:100%; max-width:1100px; align-items:start; }
-  #viewer{ position:relative; background:#000; border-radius:10px; overflow:hidden; }
-  video, canvas{ display:block; width:100%; height:auto; max-width:100%; }
-  #mainCanvas{ position:absolute; left:0; top:0; pointer-events:none; }
-  #sidebar{ background:var(--panel); padding:12px; border-radius:10px; min-height:320px; color:#c9d1d9; }
-  .section{ margin-bottom:12px; }
-  label{ display:block; font-size:0.85rem; color:var(--muted); margin-bottom:6px; }
-  .btn-row{ display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
-  .small{ font-size:0.85rem; color:var(--muted); }
-  #status{ margin-top:10px; color:var(--muted); font-size:0.9rem; }
+  :root{--bg:#0d1117;--panel:#0f1720;--muted:#8b949e;--accent:#58a6ff;}
+  body{margin:0;font-family:Inter,Arial,sans-serif;background:var(--bg);color:#c9d1d9;display:flex;flex-direction:column;align-items:center;padding:1rem;}
+  h1{color:var(--accent);margin:0 0 .75rem 0;font-size:1.2rem;}
+  .topbar{display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;justify-content:center;margin-bottom:.75rem;width:100%;max-width:1100px;}
+  .control,input[type=file]{background:var(--panel);color:inherit;border:1px solid #21262d;padding:8px 12px;border-radius:8px;font-weight:600;cursor:pointer;}
+  #layout{display:grid;grid-template-columns:1fr 320px;gap:14px;width:100%;max-width:1100px;align-items:start;}
+  #viewer{position:relative;background:#000;border-radius:10px;overflow:hidden;}
+  video,canvas{display:block;width:100%;height:auto;max-width:100%;}
+  #mainCanvas{position:absolute;left:0;top:0;}
+  #sidebar{background:var(--panel);padding:12px;border-radius:10px;min-height:320px;color:#c9d1d9;}
+  .section{margin-bottom:12px;}
+  label{display:block;font-size:0.85rem;color:var(--muted);margin-bottom:6px;}
+  #progressBar{width:100%;height:14px;background:#21262d;border-radius:6px;overflow:hidden;margin-top:4px;}
+  #progressFill{height:100%;width:0%;background:var(--accent);}
 </style>
-<!-- TensorFlow + DeepLab -->
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@0.2.2/dist/deeplab.min.js"></script>
-<!-- FFmpeg.js -->
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.8/dist/ffmpeg.min.js"></script>
 </head>
 <body>
 <h1>Video Layer — Live AI Editing</h1>
 
 <div class="topbar">
-  <input id="videoInput" type="file" accept="video/*" class="control" />
+  <input id="videoInput" type="file" accept="video/*" class="control">
   <button id="toggleDepth" class="control">Toggle Depth Grid</button>
   <button id="exportBtn" class="control" disabled>Export Video</button>
 </div>
@@ -41,11 +37,13 @@
     <video id="video" playsinline controls></video>
     <canvas id="mainCanvas"></canvas>
   </div>
-
   <aside id="sidebar">
     <div class="section">
+      <label>Processing Progress</label>
+      <div id="progressBar"><div id="progressFill"></div></div>
+    </div>
+    <div class="section">
       <label>Depth Grid</label>
-      <div class="small">Simulated depth zones (1..20). Use for layering visual aids.</div>
       <input id="depthScale" type="range" min="1" max="20" value="8">
     </div>
     <div id="status">Waiting for video...</div>
@@ -55,51 +53,51 @@
 <script>
 const videoInput = document.getElementById('videoInput');
 const video = document.getElementById('video');
-const mainCanvas = document.getElementById('mainCanvas');
-const ctx = mainCanvas.getContext('2d');
+const canvas = document.getElementById('mainCanvas');
+const ctx = canvas.getContext('2d');
 
 const toggleDepthBtn = document.getElementById('toggleDepth');
 const exportBtn = document.getElementById('exportBtn');
 const depthScaleInput = document.getElementById('depthScale');
 const statusEl = document.getElementById('status');
+const progressFill = document.getElementById('progressFill');
 
 let maskCanvas = document.createElement('canvas');
 let maskCtx = maskCanvas.getContext('2d');
 
 let deeplabModel = null;
-let segResult = null;
+let segMap = null;
 let showDepthGrid = false;
 let depthScale = parseInt(depthScaleInput.value,10);
+let processing = false;
 
-// Initialize FFmpeg
-const { createFFmpeg, fetchFile } = FFmpeg;
-const ffmpeg = createFFmpeg({ log: true });
-
+// Load model automatically
 async function loadModel(){
   setStatus('Loading DeepLab model...');
   deeplabModel = await deeplab.load({ base:'ade20k', quantizationBytes:2 });
-  setStatus('Model loaded — ready for AI editing.');
+  setStatus('Model loaded. Ready for AI editing.');
 }
 loadModel();
 
-videoInput.addEventListener('change', () => {
+// Video load
+videoInput.addEventListener('change',()=>{
   const file = videoInput.files[0];
   if(!file) return;
   video.src = URL.createObjectURL(file);
   video.load();
   video.onloadeddata = () => {
-    mainCanvas.width = video.videoWidth;
-    mainCanvas.height = video.videoHeight;
-    maskCanvas.width = video.videoWidth;
-    maskCanvas.height = video.videoHeight;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    maskCanvas.width = 256;
+    maskCanvas.height = 256;
     exportBtn.disabled = false;
     startDrawLoop();
-    runSegmentationLoop();
+    startSegmentationLoop();
     setStatus(`Video loaded (${video.videoWidth}×${video.videoHeight})`);
   };
 });
 
-// Live drawing
+// Live draw loop
 function startDrawLoop(){
   function loop(){
     drawFrame();
@@ -108,52 +106,41 @@ function startDrawLoop(){
   loop();
 }
 
-// Draw video + mask + depth
 function drawFrame(){
-  ctx.clearRect(0,0,mainCanvas.width,mainCanvas.height);
-  ctx.drawImage(video,0,0,mainCanvas.width,mainCanvas.height);
+  if(video.readyState<2) return;
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
 
-  if(segResult){
-    const w = mainCanvas.width;
-    const h = mainCanvas.height;
-    const seg = segResult.segmentationMap;
-    const legend = segResult.legend;
-
-    const imageData = maskCtx.createImageData(maskCanvas.width, maskCanvas.height);
-    const scaleX = w/256, scaleY = h/256;
-
-    for(let y=0; y<256; y++){
-      for(let x=0; x<256; x++){
-        const idx = y*256 + x;
-        const cid = seg[idx];
-        const name = legend[cid]||'';
-        if(name.toLowerCase().includes('person') || name.toLowerCase().includes('animal')){
-          const px = Math.floor(x*scaleX);
-          const py = Math.floor(y*scaleY);
-          const off = (py*w + px)*4;
-          imageData.data[off+0] = 255;
-          imageData.data[off+1] = 0;
-          imageData.data[off+2] = 0;
-          imageData.data[off+3] = 120;
-        }
+  if(segMap){
+    const scaleX = canvas.width/256;
+    const scaleY = canvas.height/256;
+    const imgData = maskCtx.createImageData(256,256);
+    for(let i=0;i<256*256;i++){
+      const cid = segMap[i];
+      // highlight person/animal
+      if(cid === 15 || cid === 16){ 
+        const off = i*4;
+        imgData.data[off] = 255;
+        imgData.data[off+1] = 0;
+        imgData.data[off+2] = 0;
+        imgData.data[off+3] = 120;
       }
     }
-    maskCtx.putImageData(imageData,0,0);
-    ctx.drawImage(maskCanvas,0,0,w,h);
+    maskCtx.putImageData(imgData,0,0);
+    ctx.drawImage(maskCanvas,0,0,canvas.width,canvas.height);
   }
 
   if(showDepthGrid) drawDepthGrid();
 }
 
-// Depth grid overlay
+// Depth grid
 function drawDepthGrid(){
-  const w = mainCanvas.width;
-  const h = mainCanvas.height;
+  const w = canvas.width;
+  const h = canvas.height;
   const zones = 20;
   ctx.save();
   ctx.globalAlpha = 0.2;
-  for(let z=0; z<zones; z++){
-    const fy = 1 - (z/(zones-1));
+  for(let z=0;z<zones;z++){
+    const fy = 1-(z/(zones-1));
     const y = Math.round((1-fy)*h);
     ctx.fillStyle = `hsl(${(z*18)%360} 60% ${60 - z*1}%)`;
     ctx.fillRect(0,y,w,h/zones);
@@ -162,70 +149,37 @@ function drawDepthGrid(){
 }
 
 // Toggle depth
-toggleDepthBtn.addEventListener('click', ()=>{
+toggleDepthBtn.addEventListener('click',()=>{
   showDepthGrid = !showDepthGrid;
   toggleDepthBtn.textContent = showDepthGrid?'Depth: ON':'Toggle Depth Grid';
 });
 
 // Depth scale
-depthScaleInput.addEventListener('input', e => depthScale = parseInt(e.target.value,10));
+depthScaleInput.addEventListener('input',e=>depthScale=parseInt(e.target.value,10));
 
 // Segmentation loop
-async function runSegmentationLoop(){
+async function startSegmentationLoop(){
   if(!deeplabModel) return;
   while(!video.paused && !video.ended){
+    processing = true;
+    updateProgress(0);
     const off = document.createElement('canvas');
     off.width = 256; off.height = 256;
     const offCtx = off.getContext('2d');
     offCtx.drawImage(video,0,0,256,256);
-    segResult = await deeplabModel.segment(off);
-    await new Promise(r=>setTimeout(r,250));
+    const seg = await deeplabModel.segment(off);
+    segMap = seg.segmentationMap;
+    processing = false;
+    updateProgress(100);
+    await new Promise(r=>setTimeout(r,200));
   }
 }
 
-// Export using FFmpeg.js
-exportBtn.addEventListener('click', async ()=>{
-  if(!video.src) return;
-  setStatus('Loading FFmpeg...');
-  if(!ffmpeg.isLoaded()) await ffmpeg.load();
-  setStatus('Encoding video...');
-
-  const inputFile = videoInput.files[0];
-  ffmpeg.FS('writeFile','input.mp4',await fetchFile(inputFile));
-
-  // Capture canvas frames while playing video
-  video.currentTime = 0;
-  video.play();
-  const recordedFrames = [];
-  const fps = 25;
-
-  const offscreen = document.createElement('canvas');
-  offscreen.width = mainCanvas.width;
-  offscreen.height = mainCanvas.height;
-  const offCtx = offscreen.getContext('2d');
-
-  video.addEventListener('timeupdate', function capture(){
-    offCtx.drawImage(mainCanvas,0,0,offscreen.width,offscreen.height);
-    const dataURL = offscreen.toDataURL('image/webp');
-    recordedFrames.push(dataURL);
-  });
-
-  video.onended = async () => {
-    setStatus('Rendering final video...');
-    const promises = recordedFrames.map((d,i)=>{
-      const b = atob(d.split(',')[1]);
-      const a = new Uint8Array(b.length);
-      for(let j=0;j<b.length;j++) a[j]=b.charCodeAt(j);
-      ffmpeg.FS('writeFile',`frame${i}.webp`,a);
-      return `-i frame${i}.webp`;
-    });
-    // Due to complexity, use this simple placeholder (full FFmpeg WebM encoding will require more complex pipeline)
-    // Instead we provide live preview already
-    setStatus('Export done (use live preview).');
-  };
-});
-
-function setStatus(s){ statusEl.textContent = s; console.log('[video_layer]',s); }
+// Progress meter
+function updateProgress(p){
+  progressFill.style.width = p+'%';
+  statusEl.textContent = processing?'Processing frame...':'Idle';
+}
 </script>
 </body>
 </html>
