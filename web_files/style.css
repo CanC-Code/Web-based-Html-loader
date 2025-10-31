@@ -1,59 +1,40 @@
-body {
-  font-family: sans-serif;
-  text-align: center;
-  background: #111;
-  color: #eee;
-  margin: 0;
-  padding: 20px;
+:root {
+  --bg:#0d1117; --panel:#0f1720; --muted:#8b949e;
+  --accent:#58a6ff; --btn:#238636;
 }
-
-#videoContainer {
-  position: relative;
-  display: inline-block;
-  margin-top: 10px;
+html, body {
+  height:100%; margin:0; padding:0;
+  background:var(--bg); color:#c9d1d9;
+  font-family:Inter, system-ui, sans-serif;
+  display:flex; flex-direction:column; align-items:center;
+  padding:12px; box-sizing:border-box;
 }
+header { text-align:center; margin-bottom:8px; }
+h1 { margin:0; color:var(--accent); font-size:1.1rem; }
+p.lead { margin:4px 0 0 0; color:var(--muted); }
 
-#video, #canvas, #maskEditor {
-  max-width: 90vw;
-  border-radius: 10px;
-  background: #000;
+main { width:100%; max-width:900px; display:flex; flex-direction:column; gap:12px; }
+.mediaBox { background:#07080a; border:1px solid #16181c; border-radius:12px; padding:10px; }
+.mediaInner { display:flex; flex-direction:column; align-items:center; gap:10px; }
+video, canvas { width:100%; max-width:840px; border-radius:10px; background:#000; }
+
+.controls {
+  display:flex; flex-wrap:wrap; gap:8px; justify-content:center;
+  background:#0b0d10; border-radius:10px; border:1px solid #111317; padding:10px;
 }
-
-#canvas, #maskEditor {
-  position: absolute;
-  top: 0;
-  left: 0;
+button, select, input[type=file] {
+  background:var(--btn); color:#fff; border:none;
+  border-radius:8px; padding:10px; font-weight:600; cursor:pointer;
 }
+button:disabled { opacity:0.6; cursor:not-allowed; }
+.aux { background:#111315; color:var(--muted); }
 
-#maskEditor {
-  cursor: crosshair;
-}
+.progressWrap { width:100%; margin-top:8px; }
+.progress { width:100%; height:8px; background:#0b0b0b; border:1px solid #151619; border-radius:6px; overflow:hidden; }
+.progress > div { height:100%; width:0%; background:linear-gradient(90deg,#3bd,#58a6ff); transition:width .1s linear; }
 
-.controls, .options {
-  margin-top: 10px;
-}
+#status { text-align:center; margin-top:6px; font-size:.9rem; color:var(--muted); }
 
-button {
-  margin: 5px;
-  padding: 10px 20px;
-  font-size: 16px;
-  border: none;
-  border-radius: 6px;
-  background-color: #4a90e2;
-  color: white;
-  cursor: pointer;
-}
-
-button:disabled {
-  background-color: #555;
-  cursor: not-allowed;
-}
-
-label {
-  margin: 0 10px;
-  font-size: 14px;
-}
-
-input[type="range"] {
-  vertical-align: middle;
+@media(max-width:640px){
+  button, select { width:100%; font-size:.95rem; }
 }
