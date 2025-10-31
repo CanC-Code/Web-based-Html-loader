@@ -1,56 +1,107 @@
-// detector.js
-let Detector = {
-  ready: false,
-  prevGray: null,
+// Web Worker assisted detector
+let worker;
+let processing = false;
+let recording = false;
+let recorder, recordedChunks = [];
 
-  async init() {
-    if (typeof cv === "undefined") {
-      await new Promise(resolve => {
-        let script = document.createElement("script");
-        script.src = "https://docs.opencv.org/4.x/opencv.js";
-        script.onload = resolve;
-        document.head.appendChild(script);
-      });
-    }
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const saveBtn = document.getElementById('saveBtn');
 
-    await new Promise(r => cv['onRuntimeInitialized'] = r);
-    this.ready = true;
-    console.log("OpenCV.js initialized");
-  },
+document.getElementById('videoInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  video.src = URL.createObjectURL(file);
+  video.load();
+  video.onloadeddata = () => {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    statusEl.textContent = "Video loaded.";
+  };
+});
 
-  async processFrame(frame) {
-    if (!this.ready) return null;
+startBtn.onclick = async () => {
+  if (!video.src) return alert("Please select a video first.");
+  if (processing) return;
 
-    const src = cv.matFromImageData(frame);
-    const gray = new cv.Mat();
-    const diff = new cv.Mat();
-    const mask = new cv.Mat();
-
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    if (this.prevGray) {
-      cv.absdiff(gray, this.prevGray, diff);
-      cv.threshold(diff, mask, 25, 255, cv.THRESH_BINARY);
-      cv.medianBlur(mask, mask, 5);
-    }
-
-    if (this.prevGray) this.prevGray.delete();
-    this.prevGray = gray.clone();
-
-    src.delete(); diff.delete(); gray.delete();
-    return mask;
-  },
-
-  applyMask(ctx, maskMat) {
-    const imgData = new ImageData(new Uint8ClampedArray(maskMat.data), maskMat.cols, maskMat.rows);
-    const tempCanvas = document.createElement("canvas");
-    tempCanvas.width = maskMat.cols;
-    tempCanvas.height = maskMat.rows;
-    const tempCtx = tempCanvas.getContext("2d");
-    tempCtx.putImageData(imgData, 0, 0);
-
-    ctx.save();
-    ctx.globalAlpha = 0.5;
-    ctx.drawImage(tempCanvas, 0, 0);
-    ctx.restore();
+  if (!worker) {
+    worker = new Worker('detector-worker.js');
+    worker.onmessage = e => {
+      if (e.data.type === 'mask') drawMask(e.data.mask, e.data.w, e.data.h);
+    };
   }
+
+  statusEl.textContent = "Starting detection...";
+  processing = true;
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  saveBtn.disabled = true;
+
+  video.play();
+  processLoop();
+
+  // start recording processed output
+  startRecording();
 };
+
+stopBtn.onclick = () => {
+  processing = false;
+  stopRecording();
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  saveBtn.disabled = false;
+  statusEl.textContent = "Stopped.";
+};
+
+saveBtn.onclick = () => {
+  const blob = new Blob(recordedChunks, { type: "video/webm" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "processed_output.webm";
+  a.click();
+};
+
+function processLoop() {
+  if (!processing || video.paused || video.ended) return;
+
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  worker.postMessage({ type: 'frame', frame });
+
+  requestAnimationFrame(processLoop);
+}
+
+function drawMask(maskData, w, h) {
+  const img = new ImageData(new Uint8ClampedArray(maskData), w, h);
+  const maskCanvas = document.createElement('canvas');
+  maskCanvas.width = w;
+  maskCanvas.height = h;
+  const mctx = maskCanvas.getContext('2d');
+  mctx.putImageData(img, 0, 0);
+
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+  ctx.drawImage(maskCanvas, 0, 0);
+  ctx.restore();
+}
+
+function startRecording() {
+  const stream = canvas.captureStream(30);
+  recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+  recordedChunks = [];
+  recorder.ondataavailable = e => recordedChunks.push(e.data);
+  recorder.start();
+  recording = true;
+}
+
+function stopRecording() {
+  if (recorder && recording) {
+    recorder.stop();
+    recording = false;
+  }
+}
