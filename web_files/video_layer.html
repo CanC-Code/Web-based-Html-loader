@@ -3,161 +3,24 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Video Layer - Dynamic Mask Editor</title>
+<title>Video Layer - Multi-object Segmentation</title>
 <link rel="stylesheet" href="style.css">
-<style>
-  body { margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9; display:flex; flex-direction:column; align-items:center; padding:1rem; }
-  h1 { margin-bottom:0.5rem; color:#58a6ff; font-size:1.3rem; }
-  #videoContainer { position:relative; width:100%; max-width:900px; }
-  video, canvas { display:block; width:100%; border-radius:10px; background:#000; }
-  canvas#maskCanvas { position:absolute; top:0; left:0; pointer-events:none; }
-  canvas#userCanvas { position:absolute; top:0; left:0; cursor:crosshair; }
-  .controls { margin-top:0.75rem; display:flex; gap:0.5rem; flex-wrap:wrap; justify-content:center; }
-  button, input[type=color] { padding:0.5rem 0.8rem; border-radius:6px; border:none; font-weight:600; cursor:pointer; }
-  #status { margin-top:0.5rem; font-size:0.9rem; color:#8b949e; }
-</style>
 </head>
 <body>
-<h1>Video Layer — Dynamic Mask Editor</h1>
+<h1>Video Layer - Multi-object Segmentation</h1>
 
 <input type="file" id="videoInput" accept="video/*">
-<div id="videoContainer">
-  <video id="video" controls playsinline></video>
-  <canvas id="maskCanvas"></canvas>
-  <canvas id="userCanvas"></canvas>
-</div>
+<video id="video" controls playsinline style="display:none;"></video>
+<canvas id="canvas"></canvas>
 
 <div class="controls">
-  <button id="startBtn" disabled>Start Processing</button>
+  <button id="startBtn">Start Processing</button>
   <button id="stopBtn" disabled>Stop</button>
   <button id="saveBtn" disabled>Save Result</button>
-  <label>Brush:
-    <input type="color" id="brushColor" value="#ff0000">
-  </label>
 </div>
 
 <p id="status">Ready.</p>
 
 <script src="detector.js"></script>
-<script>
-const video = document.getElementById('video');
-const maskCanvas = document.getElementById('maskCanvas');
-const userCanvas = document.getElementById('userCanvas');
-const maskCtx = maskCanvas.getContext('2d');
-const userCtx = userCanvas.getContext('2d');
-const statusEl = document.getElementById('status');
-
-const startBtn = document.getElementById('startBtn');
-const stopBtn = document.getElementById('stopBtn');
-const saveBtn = document.getElementById('saveBtn');
-const brushColor = document.getElementById('brushColor');
-
-let processing = false;
-let userDrawing = false;
-let lastX, lastY;
-
-// Video load
-document.getElementById('videoInput').addEventListener('change', e => {
-  const file = e.target.files[0];
-  if(!file) return;
-  video.src = URL.createObjectURL(file);
-  video.load();
-  video.onloadeddata = () => {
-    [maskCanvas, userCanvas].forEach(c=>{
-      c.width = video.videoWidth;
-      c.height = video.videoHeight;
-    });
-    startBtn.disabled = false;
-    statusEl.textContent = "Video loaded.";
-  };
-});
-
-// Start processing
-startBtn.onclick = async () => {
-  if(!video.src) return;
-  startBtn.disabled = true;
-  stopBtn.disabled = false;
-  saveBtn.disabled = true;
-  statusEl.textContent = "Initializing detector...";
-  await Detector.init();
-  processing = true;
-  processLoop();
-};
-
-// Stop processing
-stopBtn.onclick = () => {
-  processing = false;
-  startBtn.disabled = false;
-  stopBtn.disabled = true;
-  saveBtn.disabled = true;
-  statusEl.textContent = "Processing stopped.";
-};
-
-// User mask drawing
-userCanvas.addEventListener('mousedown', e=>{
-  userDrawing = true;
-  [lastX,lastY] = [e.offsetX,e.offsetY];
-});
-userCanvas.addEventListener('mousemove', e=>{
-  if(!userDrawing) return;
-  userCtx.strokeStyle = brushColor.value;
-  userCtx.lineWidth = 5;
-  userCtx.lineCap = 'round';
-  userCtx.beginPath();
-  userCtx.moveTo(lastX,lastY);
-  userCtx.lineTo(e.offsetX,e.offsetY);
-  userCtx.stroke();
-  [lastX,lastY] = [e.offsetX,e.offsetY];
-});
-userCanvas.addEventListener('mouseup', ()=> userDrawing=false);
-userCanvas.addEventListener('mouseleave', ()=> userDrawing=false);
-
-// Main processing loop
-async function processLoop() {
-  if(!processing) return;
-
-  // Draw original video to mask canvas
-  maskCtx.clearRect(0,0,maskCanvas.width,maskCanvas.height);
-  maskCtx.drawImage(video,0,0,maskCanvas.width, maskCanvas.height);
-
-  // Get frame and send to worker
-  const frame = maskCtx.getImageData(0,0,maskCanvas.width, maskCanvas.height);
-  const mask = await Detector.processFrame(frame);
-  if(mask){
-    const maskData = new ImageData(new Uint8ClampedArray(mask.data), mask.cols, mask.rows);
-    maskCtx.putImageData(maskData,0,0);
-  }
-
-  // Overlay user canvas (drawn mask)
-  maskCtx.drawImage(userCanvas,0,0);
-
-  requestAnimationFrame(processLoop);
-}
-
-// Save result
-saveBtn.onclick = () => {
-  if(!video.src) return;
-  const finalCanvas = document.createElement('canvas');
-  finalCanvas.width = maskCanvas.width;
-  finalCanvas.height = maskCanvas.height;
-  const fctx = finalCanvas.getContext('2d');
-  fctx.drawImage(video,0,0);
-  fctx.drawImage(maskCanvas,0,0);
-  fctx.drawImage(userCanvas,0,0);
-  finalCanvas.toBlob(blob=>{
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `processed_${Date.now()}.png`;
-    a.click();
-  });
-  statusEl.textContent = "Saved final result.";
-};
-
-// Enable save after processing starts
-const observer = new MutationObserver(()=>{
-  if(processing) saveBtn.disabled = false;
-});
-observer.observe(statusEl,{childList:true});
-</script>
 </body>
 </html>
