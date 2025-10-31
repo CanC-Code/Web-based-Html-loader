@@ -3,14 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Video Layer Editor - Stable Build</title>
+<title>Video Background Remover</title>
 <style>
   body {
-    font-family: sans-serif;
     margin: 0;
-    background: #1a1a1a;
+    background: #181818;
     color: #eee;
-    overflow-x: hidden;
+    font-family: sans-serif;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -19,19 +18,19 @@
   header {
     width: 100%;
     text-align: center;
+    background: #222;
     padding: 10px;
-    background: #2c2c2c;
     font-weight: bold;
     letter-spacing: 0.5px;
   }
 
-  #editor-container {
+  #container {
     display: flex;
     flex-direction: column;
     align-items: center;
     width: 95%;
     max-width: 800px;
-    margin: 20px 0;
+    margin: 15px 0;
   }
 
   video, canvas {
@@ -42,19 +41,19 @@
   }
 
   #controls {
-    margin-top: 10px;
     display: flex;
     flex-wrap: wrap;
-    justify-content: center;
     gap: 8px;
+    justify-content: center;
+    margin-top: 10px;
   }
 
   button, select, input[type=file] {
     background: #333;
     color: #fff;
     border: none;
-    padding: 8px 12px;
     border-radius: 6px;
+    padding: 8px 12px;
     cursor: pointer;
     transition: 0.2s;
   }
@@ -64,183 +63,127 @@
   }
 
   #status {
-    margin-top: 8px;
+    margin-top: 10px;
     font-size: 0.9em;
     color: #aaa;
   }
 </style>
 </head>
 <body>
-  <header>🎬 Video Layer Editor</header>
-
-  <div id="editor-container">
+  <header>🎥 Smart Background Remover</header>
+  <div id="container">
     <video id="video" controls></video>
     <canvas id="canvas"></canvas>
-
     <div id="controls">
       <input type="file" id="videoInput" accept="video/*">
-      <select id="effect">
-        <option value="none">No Effect</option>
-        <option value="motion">Motion Detection</option>
-        <option value="edge">Edge Detect</option>
-        <option value="gray">Grayscale</option>
-        <option value="invert">Invert Colors</option>
-        <option value="blur">Blur</option>
+      <select id="mode">
+        <option value="preview">Preview</option>
+        <option value="remove">Remove Background</option>
+        <option value="edges">Edge Highlight</option>
       </select>
-      <button id="apply">Apply</button>
-      <button id="clear">Clear</button>
+      <button id="startBtn">Start</button>
+      <button id="stopBtn">Stop</button>
+      <button id="saveBtn">Save</button>
     </div>
-
-    <div id="status">Idle</div>
+    <div id="status">Ready.</div>
   </div>
 
-  <script src="detector.js"></script>
-  <script>
-  const video = document.getElementById('video');
-  const canvas = document.getElementById('canvas');
-  const ctx = canvas.getContext('2d');
-  const status = document.getElementById('status');
-  const fileInput = document.getElementById('videoInput');
-  const effectSelect = document.getElementById('effect');
+<script>
+let video = document.getElementById('video');
+let canvas = document.getElementById('canvas');
+let ctx = canvas.getContext('2d');
+let statusEl = document.getElementById('status');
 
-  let currentEffect = "none";
-  let running = false;
-  let frameInterval = 1000 / 30; // start at 30 FPS
-  let lastFrameTime = 0;
+let running = false;
+let mode = 'preview';
+let bgSubtractor = null;
 
-  // Load video
-  fileInput.addEventListener('change', e => {
-    const file = e.target.files[0];
-    if (file) {
-      const url = URL.createObjectURL(file);
-      video.src = url;
-      video.play();
-    }
-  });
+document.getElementById('videoInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  video.src = url;
+  video.play();
+});
 
-  // Set up canvas size on metadata load
-  video.addEventListener('loadedmetadata', () => {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-  });
+document.getElementById('mode').addEventListener('change', e => {
+  mode = e.target.value;
+});
 
-  // Initialize detector
-  Detector.init({ mode: "motion" }).then(() => {
-    status.textContent = "Ready";
-  });
-
-  // Apply effect
-  document.getElementById('apply').addEventListener('click', () => {
-    currentEffect = effectSelect.value;
-    status.textContent = `Effect: ${currentEffect}`;
-    if (!running) {
-      running = true;
-      renderLoop(performance.now());
-    }
-  });
-
-  // Clear
-  document.getElementById('clear').addEventListener('click', () => {
-    currentEffect = "none";
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    status.textContent = "Cleared";
-  });
-
-  async function renderLoop(timestamp) {
-    if (!running) return;
-
-    const elapsed = timestamp - lastFrameTime;
-    if (elapsed < frameInterval) {
-      requestAnimationFrame(renderLoop);
-      return;
-    }
-    lastFrameTime = timestamp;
-
-    if (video.readyState >= 2 && !video.paused) {
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
-      if (currentEffect !== "none") {
-        applyEffect(frame);
-      }
-    }
-    requestAnimationFrame(renderLoop);
+document.getElementById('startBtn').onclick = async () => {
+  if (!video.src) {
+    alert("Please select a video first.");
+    return;
   }
+  await initOpenCV();
+  running = true;
+  processLoop();
+  statusEl.textContent = "Processing started...";
+};
 
-  async function applyEffect(frame) {
-    try {
-      switch (currentEffect) {
-        case "motion": {
-          const mask = await Detector.processFrame(frame, { mode: "motion" });
-          if (mask) Detector.applyMask(ctx, mask);
-          break;
-        }
-        case "edge": {
-          const mask = await Detector.processFrame(frame, { mode: "all" });
-          if (mask) Detector.applyMask(ctx, mask);
-          break;
-        }
-        case "gray":
-          grayscale(frame);
-          ctx.putImageData(frame, 0, 0);
-          break;
-        case "invert":
-          invert(frame);
-          ctx.putImageData(frame, 0, 0);
-          break;
-        case "blur":
-          blur(frame);
-          ctx.putImageData(frame, 0, 0);
-          break;
-      }
-    } catch (err) {
-      console.error("Effect error:", err);
-      status.textContent = "Error applying effect";
-      running = false;
+document.getElementById('stopBtn').onclick = () => {
+  running = false;
+  statusEl.textContent = "Stopped.";
+};
+
+document.getElementById('saveBtn').onclick = () => {
+  const link = document.createElement('a');
+  link.download = 'processed_video.png';
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+};
+
+async function initOpenCV() {
+  if (typeof cv === "undefined") {
+    statusEl.textContent = "Loading OpenCV...";
+    await new Promise(resolve => {
+      let script = document.createElement('script');
+      script.src = "https://docs.opencv.org/4.x/opencv.js";
+      script.onload = resolve;
+      document.head.appendChild(script);
+    });
+  }
+  await new Promise(resolve => {
+    cv['onRuntimeInitialized'] = resolve;
+  });
+  bgSubtractor = new cv.BackgroundSubtractorMOG2(500, 16, true);
+  statusEl.textContent = "OpenCV ready.";
+}
+
+async function processLoop() {
+  if (!running) return;
+  if (video.readyState >= 2) {
+    if (canvas.width !== video.videoWidth) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    let src = cv.imread(canvas);
+    let fgMask = new cv.Mat();
+
+    if (mode === 'remove') {
+      bgSubtractor.apply(src, fgMask);
+      let result = new cv.Mat();
+      cv.cvtColor(fgMask, fgMask, cv.COLOR_GRAY2RGBA);
+      cv.bitwise_and(src, fgMask, result);
+      cv.imshow(canvas, result);
+      src.delete(); result.delete(); fgMask.delete();
+    }
+    else if (mode === 'edges') {
+      cv.cvtColor(src, src, cv.COLOR_RGBA2GRAY);
+      cv.Canny(src, fgMask, 80, 150);
+      cv.imshow(canvas, fgMask);
+      src.delete(); fgMask.delete();
+    }
+    else {
+      cv.imshow(canvas, src);
+      src.delete();
     }
   }
 
-  // Simple pixel filters
-  function grayscale(frame) {
-    const d = frame.data;
-    for (let i = 0; i < d.length; i += 4) {
-      const v = 0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2];
-      d[i] = d[i+1] = d[i+2] = v;
-    }
-  }
-
-  function invert(frame) {
-    const d = frame.data;
-    for (let i = 0; i < d.length; i += 4) {
-      d[i] = 255 - d[i];
-      d[i+1] = 255 - d[i+1];
-      d[i+2] = 255 - d[i+2];
-    }
-  }
-
-  function blur(frame) {
-    // fast box blur for simplicity
-    const tmp = new ImageData(new Uint8ClampedArray(frame.data), frame.width, frame.height);
-    const rad = 2, w = frame.width, h = frame.height, d = frame.data;
-    for (let y = rad; y < h - rad; y++) {
-      for (let x = rad; x < w - rad; x++) {
-        let r = 0, g = 0, b = 0, count = 0;
-        for (let yy = -rad; yy <= rad; yy++) {
-          for (let xx = -rad; xx <= rad; xx++) {
-            const idx = ((y + yy) * w + (x + xx)) * 4;
-            r += tmp.data[idx];
-            g += tmp.data[idx + 1];
-            b += tmp.data[idx + 2];
-            count++;
-          }
-        }
-        const i = (y * w + x) * 4;
-        d[i] = r / count;
-        d[i + 1] = g / count;
-        d[i + 2] = b / count;
-      }
-    }
-  }
-  </script>
+  requestAnimationFrame(processLoop);
+}
+</script>
 </body>
 </html>
