@@ -1,244 +1,145 @@
-// detector.js
-// Main thread: runs MediaPipe SelfieSegmentation, sends frames+mask to compositor worker,
-// and draws worker-returned processed ImageBitmaps into processed canvas.
-// Also manages recording (MediaRecorder) of the processed canvas.
+// detector.js — companion module for Video Layer Stable Editor
+// Handles frame processing using OpenCV.js, offloading heavy work to detector-worker.js when available
 
-const inputVideo = document.getElementById('video');      // source video element
-const processedCanvas = document.getElementById('canvas'); // output canvas element
-const processedCtx = processedCanvas.getContext('2d');
+const Detector = {
+  ready: false,
+  mode: "motion",
+  useWorker: false,
+  worker: null,
+  prevGray: null,
 
-const startBtn = document.getElementById('startBtn');
-const stopBtn = document.getElementById('stopBtn');
-const saveBtn = document.getElementById('saveBtn');
-const maskOpacityInput = document.getElementById('maskOpacity');
-const statusEl = document.getElementById('status');
+  async init(options = {}) {
+    this.mode = options.mode || "motion";
 
-let seg = null;                    // MediaPipe SelfieSegmentation instance
-let compositor = null;             // Web Worker instance
-let compositorBusy = false;
-let running = false;
-let latestMaskBitmap = null;
-let lastSentAt = 0;
-const minMsBetweenSends = 80;      // throttle to ~12 fps to worker
-
-// Recording
-let mediaRecorder = null;
-let recordedChunks = [];
-
-// Init compositor worker from local file 'detector-worker.js'
-function initCompositorWorker() {
-  if (compositor) return;
-  compositor = new Worker('detector-worker.js');
-
-  compositor.onmessage = (ev) => {
-    const data = ev.data;
-    if (data.type === 'ready') {
-      setStatus('Compositor ready');
-      return;
-    }
-    if (data.type === 'result') {
-      // Received processed ImageBitmap
-      const bitmap = ev.data.bitmap;
-      // draw it
-      processedCtx.clearRect(0,0,processedCanvas.width, processedCanvas.height);
-      processedCtx.drawImage(bitmap, 0, 0, processedCanvas.width, processedCanvas.height);
-      // close the bitmap to free memory
-      try { bitmap.close(); } catch(e){}
-      compositorBusy = false;
-    }
-    if (data.type === 'error') {
-      console.error('Compositor worker error:', data.message);
-      setStatus('Compositor error: ' + data.message);
-      compositorBusy = false;
-    }
-  };
-}
-
-// Initialize MediaPipe SelfieSegmentation (main thread)
-async function initSegmentation() {
-  if (seg) return;
-  seg = new SelfieSegmentation.SelfieSegmentation({
-    locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`
-  });
-  seg.setOptions({ modelSelection: 1 }); // best quality modelSelection
-  seg.onResults(onSegResults);
-  setStatus('Segmentation initialized');
-}
-
-// Handler from MediaPipe — receives segmentationMask as an HTMLImageElement/CanvasImageSource
-async function onSegResults(results) {
-  if (!results || !results.segmentationMask) return;
-  // Convert segmentationMask (CanvasImageSource) into an ImageBitmap for transfer
-  try {
-    if (latestMaskBitmap) { try{ latestMaskBitmap.close(); } catch(e){} }
-    latestMaskBitmap = await createImageBitmap(results.segmentationMask);
-  } catch (err) {
-    console.warn('createImageBitmap(mask) failed:', err);
-    latestMaskBitmap = null;
-  }
-}
-
-// Draw loop + frame sending
-async function frameLoop() {
-  if (!running) return;
-
-  // ensure video frame available
-  if (inputVideo.readyState >= 2) {
-    // draw input frame into temporary offscreen to create transferable ImageBitmap
-    // use a small offscreen for speed? We will transfer full resolution frame for quality
-    // but we throttle sending to avoid overload
-    const now = performance.now();
-    if (!compositorBusy && latestMaskBitmap && (now - lastSentAt > minMsBetweenSends)) {
-      try {
-        const frameBitmap = await createImageBitmap(inputVideo);
-        compositorBusy = true;
-        lastSentAt = now;
-
-        // prepare message: mode and mask opacity available from UI
-        const payload = {
-          type: 'process',
-          mode: 'auto', // or read from UI if you have multiple modes
-          maskOpacity: parseFloat(maskOpacityInput?.value ?? 0.5)
+    // try to load OpenCV.js if not yet loaded
+    if (typeof cv === "undefined") {
+      await new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = "https://docs.opencv.org/4.x/opencv.js";
+        script.onload = () => {
+          cv['onRuntimeInitialized'] = () => {
+            resolve();
+          };
         };
-
-        // send frame + mask bitmaps (transfer them)
-        compositor.postMessage({
-          ...payload,
-          frame: frameBitmap,
-          mask: latestMaskBitmap,
-          width: processedCanvas.width,
-          height: processedCanvas.height
-        }, [frameBitmap, latestMaskBitmap]);
-
-        // after transfer, we no longer own latestMaskBitmap (it's transferred), so clear ref
-        latestMaskBitmap = null;
-      } catch (err) {
-        console.error('Error creating/transferring frame Bitmap:', err);
-        compositorBusy = false;
-      }
-    } else {
-      // still draw last processed or draw input video if no processed available
-      // If worker is busy and no processed result yet, we can draw the raw input as fallback.
-      // Keep main canvas showing something responsive:
-      processedCtx.drawImage(inputVideo, 0, 0, processedCanvas.width, processedCanvas.height);
+        script.onerror = () => reject(new Error("Failed to load OpenCV.js"));
+        document.head.appendChild(script);
+      });
+    } else if (!cv.Mat) {
+      await new Promise(r => cv['onRuntimeInitialized'] = r);
     }
-  }
 
-  requestAnimationFrame(frameLoop);
-}
-
-// Start processing: init seg & worker, start playback and loop, start recorder
-async function startProcessing() {
-  if (running) return;
-  if (!inputVideo.src) { setStatus('Load a video first'); return; }
-  // ensure canvas sizing matches video
-  processedCanvas.width = inputVideo.videoWidth;
-  processedCanvas.height = inputVideo.videoHeight;
-
-  setStatus('Initializing...');
-  startBtnDisabled(true);
-  stopBtnDisabled(false);
-  saveBtnDisabled(true);
-
-  initCompositorWorker();
-  await initSegmentation();
-
-  // Start MediaPipe segmentation on video frames by sending video to seg.send periodically
-  // We'll run segmentation at ~12 fps to reduce load
-  (async function segLoop() {
-    while (running === false) {
-      // wait until we set running true
-      await new Promise(r => setTimeout(r, 50));
+    // initialize Web Worker if supported
+    try {
+      this.worker = new Worker("detector-worker.js");
+      this.worker.onmessage = e => {
+        if (e.data.type === "log") console.log("[DetectorWorker]", e.data.msg);
+      };
+      this.useWorker = true;
+      console.log("Detector: Web Worker active");
+    } catch (err) {
+      console.warn("Detector: worker not available, fallback to main thread", err);
+      this.useWorker = false;
     }
-  })();
 
-  // Start video playback (if not already)
-  try { await inputVideo.play(); } catch(e){ /* autoplay blocked; user must press play */ }
+    this.ready = true;
+    console.log("Detector initialized with mode:", this.mode);
+  },
 
-  // Start segmentation loop separately at lower rate
-  let segRunning = true;
-  (async function segmentationLoop(){
-    while (running) {
+  /**
+   * Process a frame from canvas context (ImageData).
+   * Returns a binary mask (cv.Mat) or null if no changes detected.
+   */
+  async processFrame(frame, opts = {}) {
+    if (!this.ready) return null;
+    const mode = opts.mode || this.mode;
+
+    // handle via worker if available
+    if (this.useWorker) {
+      return new Promise(resolve => {
+        const offscreen = frame.data.buffer.slice(0);
+        this.worker.onmessage = e => {
+          if (e.data.type === "mask") {
+            const { maskData, width, height } = e.data;
+            const maskMat = new cv.Mat(height, width, cv.CV_8UC1);
+            maskMat.data.set(new Uint8Array(maskData));
+            resolve(maskMat);
+          } else if (e.data.type === "none") {
+            resolve(null);
+          }
+        };
+        this.worker.postMessage({ type: "process", frame, mode });
+      });
+    }
+
+    // fallback to main thread
+    const src = cv.matFromImageData(frame);
+    const gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    let mask = new cv.Mat();
+
+    if (mode === "motion" && this.prevGray) {
+      cv.absdiff(gray, this.prevGray, mask);
+      cv.threshold(mask, mask, 25, 255, cv.THRESH_BINARY);
+      cv.medianBlur(mask, mask, 5);
+    } else if (mode === "all") {
+      cv.Canny(gray, mask, 80, 160);
+    } else if (mode === "human") {
+      // simple person detection via Haar cascades (lightweight)
       try {
-        // send current video frame to MediaPipe segmentation
-        await seg.send({ image: inputVideo });
-      } catch(err) {
-        console.warn('seg.send error', err);
+        if (!this.cascade) {
+          this.cascade = new cv.CascadeClassifier();
+          await this.loadCascade("https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_fullbody.xml");
+        }
+        const bodies = new cv.RectVector();
+        this.cascade.detectMultiScale(gray, bodies, 1.1, 3, 0);
+        mask.setTo(new cv.Scalar(0, 0, 0, 255));
+        for (let i = 0; i < bodies.size(); i++) {
+          const r = bodies.get(i);
+          cv.rectangle(mask, new cv.Point(r.x, r.y), new cv.Point(r.x + r.width, r.y + r.height), new cv.Scalar(255), -1);
+        }
+        bodies.delete();
+      } catch (err) {
+        console.warn("Human detection fallback:", err);
+        cv.threshold(gray, mask, 128, 255, cv.THRESH_BINARY);
       }
-      // throttle segmentation frequency
-      await new Promise(r => setTimeout(r, 90)); // ~11 fps segmentation
     }
-    segRunning = false;
-  })();
 
-  // Start compositor loop
-  running = true;
-  // Start recording processed canvas
-  startRecording();
-  requestAnimationFrame(frameLoop);
-  setStatus('Processing started');
-}
+    if (this.prevGray) this.prevGray.delete();
+    this.prevGray = gray.clone();
 
-// Stop processing
-function stopProcessing() {
-  if (!running) return;
-  running = false;
-  startBtnDisabled(false);
-  stopBtnDisabled(true);
-  // stop recording (MediaRecorder will stop and emit dataavailable)
-  stopRecording();
-  setStatus('Processing stopped — ready to save');
-  saveBtnDisabled(false);
-}
+    src.delete(); gray.delete();
 
-// Recording helpers
-function startRecording() {
-  recordedChunks = [];
-  const stream = processedCanvas.captureStream(25);
-  mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp8' });
-  mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) recordedChunks.push(e.data); };
-  mediaRecorder.onstop = () => {
-    setStatus('Recording complete. Use Save to download.');
-  };
-  mediaRecorder.start();
-}
+    return mask;
+  },
 
-function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state === 'recording') {
-    mediaRecorder.stop();
-  }
-}
+  async loadCascade(url) {
+    const response = await fetch(url);
+    const buffer = await response.arrayBuffer();
+    const data = new Uint8Array(buffer);
+    cv.FS_createDataFile("/", "cascade.xml", data, true, false, false);
+    this.cascade.load("cascade.xml");
+  },
 
-// Save final recorded video
-function saveRecording() {
-  if (!recordedChunks || recordedChunks.length === 0) { setStatus('No recording available'); return; }
-  const blob = new Blob(recordedChunks, { type: 'video/webm' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `processed_${Date.now()}.webm`;
-  a.click();
-  setStatus('Saved processed video');
-}
+  /**
+   * Apply the mask over the video frame context
+   * @param {CanvasRenderingContext2D} ctx 
+   * @param {cv.Mat} maskMat 
+   */
+  applyMask(ctx, maskMat) {
+    if (!maskMat) return;
+    const maskImage = new ImageData(new Uint8ClampedArray(maskMat.data), maskMat.cols, maskMat.rows);
+    const tempCanvas = document.createElement("canvas");
+    tempCanvas.width = maskMat.cols;
+    tempCanvas.height = maskMat.rows;
+    const tempCtx = tempCanvas.getContext("2d");
+    tempCtx.putImageData(maskImage, 0, 0);
 
-// UI helpers
-function setStatus(s){ statusEl.textContent = s; console.log('[detector] ', s); }
-function startBtnDisabled(v){ startBtn.disabled = v; }
-function stopBtnDisabled(v){ stopBtn.disabled = v; }
-function saveBtnDisabled(v){ saveBtn.disabled = v; }
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.drawImage(tempCanvas, 0, 0);
+    ctx.restore();
 
-// Wire UI
-startBtn.onclick = async () => {
-  if (!running) {
-    running = true;
-    await startProcessing();
+    maskMat.delete();
   }
 };
-stopBtn.onclick = () => stopProcessing();
-saveBtn.onclick = () => saveRecording();
-
-// When page unload, cleanup worker and bitmaps
-window.addEventListener('beforeunload', () => {
-  if (compositor) { compositor.terminate(); compositor = null; }
-  if (latestMaskBitmap) try{ latestMaskBitmap.close(); } catch(e){}
-});
