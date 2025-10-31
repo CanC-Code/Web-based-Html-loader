@@ -3,67 +3,32 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Video Layer — Person Cutout Editor</title>
-<style>
-  :root{ --bg:#0d1117; --panel:#0f1720; --muted:#8b949e; --accent:#58a6ff; --btn:#238636; }
-  html,body{height:100%; margin:0;}
-  body{ background:var(--bg); color:#c9d1d9; font-family:Inter,Arial,sans-serif; display:flex; flex-direction:column; align-items:center; padding:12px; box-sizing:border-box; }
-  header{ width:100%; max-width:980px; text-align:center; margin-bottom:8px; }
-  h1{ margin:0; color:var(--accent); font-size:1.1rem;}
-  p.lead{ color:var(--muted); margin-top:6px; font-size:0.95rem;}
-  main{ width:100%; max-width:980px; display:flex; flex-direction:column; gap:12px; align-items:stretch; }
-  .mediaBox{ background:#07080a; border:1px solid #16181c; border-radius:12px; padding:10px; }
-  .mediaInner{ display:flex; flex-direction:column; gap:10px; align-items:center; }
-  video, canvas{ width:100%; max-width:880px; border-radius:10px; background:#000; display:block; }
-  .controls{ display:flex; gap:8px; flex-wrap:wrap; justify-content:center; padding:10px; border-radius:10px; background:linear-gradient(180deg,#0b0d10,#071013); border:1px solid #111317; }
-  .controls>*{ min-width:120px; flex:1 1 auto; }
-  button, select, input[type="file"]{ appearance:none; -webkit-appearance:none; background:var(--btn); color:#fff; border:none; padding:10px 12px; border-radius:8px; font-weight:700; cursor:pointer; font-size:1rem; }
-  button:disabled{ background:#2f3338; opacity:0.7; cursor:not-allowed; }
-  .aux{ background:#111315; color:var(--muted); font-weight:600; }
-  .progressWrap{ width:100%; margin-top:8px; }
-  .progress{ width:100%; height:8px; background:#0b0b0b; border-radius:6px; overflow:hidden; border:1px solid #151619; }
-  .progress>div{ height:100%; width:0%; background:linear-gradient(90deg,#3bd,#58a6ff); transition:width 0.12s linear; }
-  #status{ margin-top:10px; color:var(--muted); font-size:0.95rem; text-align:center; word-break:break-word; }
-  @media(max-width:760px){ .controls>*{ min-width:unset; width:100%; } }
-</style>
-
-<!-- MediaPipe SelfieSegmentation (global) — must be loaded before detector.js -->
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
-<!-- detector.js is next to this file in web_files/ -->
-<script src="detector.js"></script>
-
+<title>Video Layer — Stable Background Remover</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header>
-  <h1>Video Layer — Person Cutout Editor</h1>
-  <p class="lead">Upload a video, choose mode (Blur / Replace / Transparent), then Start → Save. Auto-stops at end.</p>
+  <h1>Video Layer — Background Remover</h1>
+  <p class="lead">Select a video and remove its background with AI segmentation.</p>
 </header>
 
 <main>
   <section class="mediaBox">
     <div class="mediaInner">
-      <label style="width:100%; text-align:center;">
-        <input id="videoInput" type="file" accept="video/*" style="width:100%; padding:8px; border-radius:8px;" />
-      </label>
-
+      <input id="videoInput" type="file" accept="video/*">
       <video id="inputVideo" playsinline controls></video>
-
-      <!-- outputCanvas is where processed frame appears (background removed/replaced) -->
-      <canvas id="outputCanvas" aria-label="Processed output"></canvas>
+      <canvas id="outputCanvas"></canvas>
     </div>
   </section>
 
-  <section class="controls" role="region" aria-label="Processing controls">
-    <select id="modeSelect" class="aux" title="Mode">
-      <option value="transparent">Transparent (cutout)</option>
-      <option value="blur">Blur Background</option>
-      <option value="replace">Replace Background (upload image)</option>
-    </select>
-
-    <input id="bgInput" type="file" accept="image/*" style="display:none;" />
-    <button id="startBtn">Start Processing</button>
+  <section class="controls">
+    <button id="startBtn">Start</button>
     <button id="stopBtn" disabled>Stop</button>
-    <button id="saveBtn" disabled>Save Video</button>
+    <button id="saveBtn" disabled>Save</button>
+    <select id="modeSelect" class="aux">
+      <option value="person">People (AI)</option>
+      <option value="motion">Motion (OpenCV)</option>
+    </select>
   </section>
 
   <div class="progressWrap">
@@ -73,226 +38,6 @@
   <div id="status">Ready.</div>
 </main>
 
-<script>
-/* UI wiring and processing loop using Detector from detector.js */
-const videoInput = document.getElementById('videoInput');
-const inputVideo = document.getElementById('inputVideo');
-const outCanvas = document.getElementById('outputCanvas');
-const outCtx = outCanvas.getContext('2d');
-const modeSelect = document.getElementById('modeSelect');
-const bgInput = document.getElementById('bgInput');
-const startBtn = document.getElementById('startBtn');
-const stopBtn = document.getElementById('stopBtn');
-const saveBtn = document.getElementById('saveBtn');
-const progressFill = document.getElementById('progressFill');
-const statusEl = document.getElementById('status');
-
-let processing = false;
-let bgImage = null;
-let recorder = null;
-let recordedChunks = [];
-let lastProgressPct = 0;
-let throttled = { last:0, interval: Math.round(1000/12) }; // ~12 FPS
-
-// File loading
-videoInput.addEventListener('change', e=>{
-  const f = e.target.files[0];
-  if(!f) return;
-  stopProcessing();
-  inputVideo.src = URL.createObjectURL(f);
-  inputVideo.load();
-  inputVideo.onloadeddata = ()=>{
-    outCanvas.width = inputVideo.videoWidth;
-    outCanvas.height = inputVideo.videoHeight;
-    status('Loaded video: ' + inputVideo.videoWidth + '×' + inputVideo.videoHeight);
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
-    saveBtn.disabled = true;
-    setProgress(0);
-  };
-});
-
-// Show background input when replace selected
-modeSelect.addEventListener('change', ()=>{
-  bgInput.style.display = modeSelect.value === 'replace' ? 'inline-block' : 'none';
-});
-
-// Load background image
-bgInput.addEventListener('change', e=>{
-  const f = e.target.files[0];
-  if(!f) return;
-  const img = new Image();
-  img.onload = ()=> { bgImage = img; status('Background image loaded.'); };
-  img.src = URL.createObjectURL(f);
-});
-
-// Start processing
-startBtn.addEventListener('click', async ()=>{
-  if(!inputVideo.src) return status('Please load a video first.');
-  if(typeof Detector === 'undefined') return status('detector.js not loaded.');
-
-  // initialize Detector (ensures MediaPipe constructed)
-  try{
-    await Detector.init({ mode:'human' });
-  }catch(err){
-    console.error('Detector.init failed', err);
-    return status('Detector init failed: ' + err.message);
-  }
-
-  startBtn.disabled = true;
-  stopBtn.disabled = false;
-  modeSelect.disabled = true;
-  bgInput.disabled = true;
-  saveBtn.disabled = true;
-  recordedChunks = [];
-  status('Processing started...');
-
-  // Start recording output canvas
-  try {
-    const stream = outCanvas.captureStream(25);
-    recorder = new MediaRecorder(stream, { mimeType:'video/webm;codecs=vp8' });
-    recorder.ondataavailable = e => { if(e.data && e.data.size) recordedChunks.push(e.data); };
-    recorder.onstop = ()=> { status('Recording stopped — ready to save.'); saveBtn.disabled = recordedChunks.length === 0; };
-    recorder.start(500);
-  } catch(err) {
-    console.warn('Recorder unavailable:', err);
-    recorder = null;
-  }
-
-  processing = true;
-  inputVideo.currentTime = 0;
-  await inputVideo.play().catch(()=>{});
-  requestAnimationFrame(loop);
-});
-
-// Stop
-stopBtn.addEventListener('click', stopProcessing);
-function stopProcessing(){
-  if(!processing) return;
-  processing = false;
-  startBtn.disabled = false;
-  stopBtn.disabled = true;
-  modeSelect.disabled = false;
-  bgInput.disabled = false;
-  if(recorder && recorder.state === 'recording') recorder.stop();
-  saveBtn.disabled = recordedChunks.length === 0;
-  status('Processing stopped.');
-}
-
-// Save
-saveBtn.addEventListener('click', ()=>{
-  if(recordedChunks.length === 0) return status('Nothing recorded.');
-  const blob = new Blob(recordedChunks, { type:'video/webm' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `processed_${Date.now()}.webm`;
-  a.click();
-  status('Saved processed video.');
-});
-
-// main loop
-async function loop(now){
-  if(!processing) return;
-  // throttle
-  if(now - throttled.last < throttled.interval){
-    requestAnimationFrame(loop);
-    return;
-  }
-  throttled.last = now;
-
-  // draw background depending on mode
-  const mode = modeSelect.value;
-
-  if(mode === 'replace' && bgImage){
-    // draw background image scaled to canvas
-    outCtx.clearRect(0,0,outCanvas.width,outCanvas.height);
-    outCtx.drawImage(bgImage, 0, 0, outCanvas.width, outCanvas.height);
-  } else if(mode === 'blur'){
-    // cheap blur: draw scaled down then up and apply small blur filter
-    const tmp = document.createElement('canvas');
-    const tw = Math.max(1, Math.round(outCanvas.width/12));
-    const th = Math.max(1, Math.round(outCanvas.height/12));
-    tmp.width = tw; tmp.height = th;
-    const tctx = tmp.getContext('2d');
-    tctx.drawImage(inputVideo, 0, 0, tw, th);
-    outCtx.save();
-    outCtx.filter = 'blur(12px)';
-    outCtx.drawImage(tmp, 0, 0, outCanvas.width, outCanvas.height);
-    outCtx.restore();
-  } else {
-    // transparent or default: clear to transparent
-    outCtx.clearRect(0,0,outCanvas.width,outCanvas.height);
-  }
-
-  // Get a mask from Detector (uses the video element directly)
-  let mask = null;
-  try {
-    mask = await Detector.processFrame(inputVideo); // returns ImageBitmap or null depending on detector implementation
-  } catch(err){
-    console.warn('processFrame error', err);
-  }
-
-  // Compose: draw the person over the background using mask
-  if(mask){
-    // temp canvas holds the video frame
-    const temp = document.createElement('canvas');
-    temp.width = outCanvas.width; temp.height = outCanvas.height;
-    const tctx = temp.getContext('2d');
-    tctx.drawImage(inputVideo, 0, 0, temp.width, temp.height);
-
-    // Draw the mask as destination on outCtx then draw the person via source-in
-    outCtx.save();
-    // draw mask scaled to canvas as destination (its alpha indicates person)
-    outCtx.globalCompositeOperation = 'destination-over';
-    // ensure mask has been scaled to canvas size:
-    outCtx.drawImage(mask, 0, 0, outCanvas.width, outCanvas.height);
-    // Now keep only the area of mask + draw person
-    outCtx.globalCompositeOperation = 'source-in';
-    outCtx.drawImage(temp, 0, 0, outCanvas.width, outCanvas.height);
-    // restore composite
-    outCtx.globalCompositeOperation = 'source-over';
-    outCtx.restore();
-
-    // cleanup mask ImageBitmap if possible
-    try{ if(typeof mask.close === 'function') mask.close(); } catch(e){}
-  } else {
-    // If no mask, we can optionally draw nothing (transparent), or fallback to video frame if transparent mode
-    if(mode === 'transparent'){
-      // keep transparent
-    } else {
-      // fallback: draw video on top
-      outCtx.drawImage(inputVideo, 0, 0, outCanvas.width, outCanvas.height);
-    }
-  }
-
-  // update progress
-  if(inputVideo.duration && inputVideo.duration > 0){
-    const pct = Math.min(100, (inputVideo.currentTime / inputVideo.duration) * 100);
-    setProgress(pct);
-    if(pct > lastProgressPct) lastProgressPct = pct;
-  }
-
-  // stop automatically at end
-  if(inputVideo.ended || inputVideo.currentTime >= inputVideo.duration - 0.01){
-    // small delay to let last frame be recorded
-    if(recorder && recorder.state === 'recording') {
-      setTimeout(()=> {
-        recorder.stop();
-        stopProcessing();
-      }, 300);
-    } else {
-      stopProcessing();
-    }
-    return;
-  }
-
-  requestAnimationFrame(loop);
-}
-
-function status(s){ statusEl.textContent = s; console.log('[video_layer] ', s); }
-function setProgress(p){ progressFill.style.width = `${Math.max(0, Math.min(100, p))}%`; }
-
-status('Ready.');
-</script>
+<script src="detector.js"></script>
 </body>
 </html>
