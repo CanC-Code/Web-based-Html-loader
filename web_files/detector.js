@@ -13,11 +13,11 @@ worker.postMessage({ type: 'init' });
 
 worker.onmessage = (e) => {
   const data = e.data;
-  if(data.type === 'ready'){
-    statusEl.textContent = 'Detector ready';
-  } else if(data.type === 'mask'){
+  if (data.type === 'ready') {
+    statusEl.textContent = 'Detector ready.';
+  } else if (data.type === 'mask') {
     drawMask(new Uint8ClampedArray(data.maskData), data.width, data.height);
-  } else if(data.type === 'error'){
+  } else if (data.type === 'error') {
     statusEl.textContent = 'Worker error: ' + data.message;
   }
 };
@@ -30,12 +30,12 @@ document.getElementById('videoInput').addEventListener('change', e => {
   video.onloadeddata = () => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    statusEl.textContent = "Video loaded";
+    statusEl.textContent = "Video loaded.";
   };
 });
 
 document.getElementById('startBtn').onclick = () => {
-  if(!video.src) return;
+  if (!video.src) return;
   processing = true;
   recordedChunks = [];
   statusEl.textContent = "Processing...";
@@ -44,7 +44,7 @@ document.getElementById('startBtn').onclick = () => {
 
   const stream = canvas.captureStream(25);
   mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp8' });
-  mediaRecorder.ondataavailable = e => { if(e.data.size>0) recordedChunks.push(e.data); };
+  mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
   mediaRecorder.start();
 
   video.play();
@@ -54,36 +54,41 @@ document.getElementById('startBtn').onclick = () => {
 document.getElementById('stopBtn').onclick = () => {
   processing = false;
   video.pause();
-  mediaRecorder.stop();
+  if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
   document.getElementById('stopBtn').disabled = true;
   document.getElementById('saveBtn').disabled = false;
-  statusEl.textContent = "Processing stopped, ready to save.";
+  statusEl.textContent = "Processing stopped. Ready to save.";
 };
 
 document.getElementById('saveBtn').onclick = () => {
-  if(recordedChunks.length === 0) return;
-  const blob = new Blob(recordedChunks, { type:'video/webm' });
+  if (recordedChunks.length === 0) return;
+  const blob = new Blob(recordedChunks, { type: 'video/webm' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'processed_'+Date.now()+'.webm';
+  a.download = 'processed_' + Date.now() + '.webm';
   a.click();
   statusEl.textContent = "Video saved.";
 };
 
-function drawMask(maskData, w, h){
+function drawMask(maskData, w, h) {
   const imgData = new ImageData(maskData, w, h);
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   ctx.save();
   ctx.globalAlpha = parseFloat(maskOpacityInput.value);
-  ctx.putImageData(imgData,0,0);
+  ctx.putImageData(imgData, 0, 0);
   ctx.restore();
 }
 
-function processLoop(){
-  if(!processing) return;
-  ctx.drawImage(video,0,0,canvas.width,canvas.height);
-  const frame = ctx.getImageData(0,0,canvas.width,canvas.height);
-  worker.postMessage({ type:'process', frameData: frame.data.buffer, width: canvas.width, height: canvas.height }, [frame.data.buffer]);
+function processLoop() {
+  if (!processing) return;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  worker.postMessage({
+    type: 'process',
+    frameData: frame.data.buffer,
+    width: canvas.width,
+    height: canvas.height
+  }, [frame.data.buffer]);
   requestAnimationFrame(processLoop);
 }
