@@ -1,513 +1,65 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Video Layer — Multithreaded Live AI Processing</title>
-<style>
-  :root{--bg:#0d1117;--panel:#0f1720;--muted:#8b949e;--accent:#58a6ff;}
-  body{margin:0;font-family:Inter,Arial,sans-serif;background:var(--bg);color:#c9d1d9;display:flex;flex-direction:column;align-items:center;padding:12px;}
-  h1{color:var(--accent);margin:0 0 12px 0;font-size:1.25rem;}
-  .topbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:center;margin-bottom:12px;width:100%;max-width:1100px;}
-  .control,input[type=file]{background:var(--panel);color:inherit;border:1px solid #21262d;padding:8px 12px;border-radius:8px;font-weight:600;cursor:pointer;}
-  .control[disabled]{opacity:0.5;cursor:not-allowed;}
-  #layout{display:grid;grid-template-columns:1fr 360px;gap:14px;width:100%;max-width:1200px;align-items:start;}
-  #viewer{position:relative;background:#000;border-radius:10px;overflow:hidden;}
-  video,canvas{display:block;width:100%;height:auto;max-width:100%;}
-  #inputCanvas{display:none;}
-  #processedCanvas{position:relative;border-radius:8px; background:#000;}
-  #sidebar{background:var(--panel);padding:12px;border-radius:10px;min-height:360px;color:#c9d1d9;}
-  label{display:block;font-size:0.85rem;color:var(--muted);margin-bottom:6px;}
-  .list{max-height:160px;overflow:auto;border:1px solid #1f2933;border-radius:8px;padding:6px;background:#07080a;}
-  .btn-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;}
-  #status{margin-top:8px;color:var(--muted);font-size:0.9rem;word-break:break-word;}
-  #progressBox{width:100%;height:12px;background:#121316;border-radius:6px;overflow:hidden;margin-top:8px;}
-  #progressFill{height:100%;width:0%;background:linear-gradient(90deg,#38bdf8,#60a5fa);transition:width .12s;}
-  .small{font-size:0.85rem;color:var(--muted);}
-  @media(max-width:920px){#layout{grid-template-columns:1fr;}#sidebar{order:2}}
-</style>
-
-<!-- MediaPipe Segmentation (must run on main thread for reliability) -->
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Layer - Object Detection</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <h1>Video Layer — Multithreaded Live AI Processing</h1>
+<h1>Advanced Object Layer Processor</h1>
 
-  <div class="topbar">
-    <input id="videoInput" type="file" accept="video/*" class="control" />
-    <select id="modeSelect" class="control">
-      <option value="auto">Auto Focus (person/animal)</option>
-      <option value="blur">Blur Background</option>
-      <option value="replace">Replace BG Color</option>
-      <option value="transparent">Transparent BG</option>
-    </select>
-    <button id="startRecordBtn" class="control" disabled>Start Save</button>
-    <button id="stopRecordBtn" class="control" disabled>Stop Save</button>
-  </div>
+<input type="file" id="videoInput" accept="video/*">
+<video id="video" controls playsinline></video>
+<canvas id="canvas"></canvas>
 
-  <div id="layout">
-    <div id="viewer">
-      <video id="inputVideo" playsinline controls></video>
-      <!-- hidden inputCanvas used for capturing frames to pass to worker -->
-      <canvas id="inputCanvas"></canvas>
+<div class="controls">
+  <button id="startBtn">Start Processing</button>
+  <button id="stopBtn" disabled>Stop</button>
+  <button id="saveBtn" disabled>Save Result</button>
+</div>
 
-      <!-- processedCanvas is separate from input video playback; drawn with worker-produced frames -->
-      <canvas id="processedCanvas"></canvas>
-    </div>
+<p id="status">Ready.</p>
 
-    <aside id="sidebar">
-      <div class="section">
-        <label>Live status</label>
-        <div id="status">No video loaded.</div>
-      </div>
-
-      <div class="section">
-        <label>Processing meter</label>
-        <div id="progressBox"><div id="progressFill"></div></div>
-        <div class="small" id="progressText">Idle</div>
-      </div>
-
-      <div class="section">
-        <label>Performance</label>
-        <div class="small">Workers: compositor (1). Throttling engaged to avoid overload.</div>
-      </div>
-
-      <div class="section">
-        <label>Notes</label>
-        <div class="small">Model runs on main thread (optimized). Compositing and smoothing run in a worker to keep UI responsive.</div>
-      </div>
-    </aside>
-  </div>
-
+<script src="detector.js"></script>
 <script>
-/* Multithreaded live AI processing:
-   - MediaPipe segmentation (main thread) -> segmentationMask (ImageBitmap-like)
-   - Compositor worker receives frames + masks (ImageBitmap transfer) and returns composited ImageBitmap
-   - Main thread draws returned ImageBitmap to processedCanvas (independent of input playback)
-   - Recording uses MediaRecorder capturing processedCanvas
-   - Temporal smoothing in worker to produce smooth masks
-*/
-
-// UI elements
-const videoInput = document.getElementById('videoInput');
-const inputVideo = document.getElementById('inputVideo');
-const inputCanvas = document.getElementById('inputCanvas');
-const processedCanvas = document.getElementById('processedCanvas');
-const processedCtx = processedCanvas.getContext('2d');
-const modeSelect = document.getElementById('modeSelect');
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
-const progressFill = document.getElementById('progressFill');
-const progressText = document.getElementById('progressText');
-const startRecordBtn = document.getElementById('startRecordBtn');
-const stopRecordBtn = document.getElementById('stopRecordBtn');
 
-let seg = null;
-let latestMask = null; // ImageBitmap from MediaPipe
-let compositorWorker = null;
-let compositorBusy = false;
-let useThrottleMs = 100; // throttle sending frames to worker
-let lastSentAt = 0;
+let processing = false;
 
-// Recording state
-let mediaRecorder = null;
-let recordedChunks = [];
-
-// Setup canvases after video load
-videoInput.addEventListener('change', async (e) => {
-  const f = e.target.files[0];
-  if(!f) return;
-  inputVideo.pause();
-  inputVideo.src = URL.createObjectURL(f);
-  inputVideo.load();
-
-  await new Promise(resolve => { inputVideo.onloadedmetadata = resolve; });
-
-  // set sizes
-  inputCanvas.width = inputVideo.videoWidth;
-  inputCanvas.height = inputVideo.videoHeight;
-  processedCanvas.width = inputVideo.videoWidth;
-  processedCanvas.height = inputVideo.videoHeight;
-
-  // enable record buttons
-  startRecordBtn.disabled = false;
-
-  setStatus(`Loaded ${inputVideo.videoWidth}×${inputVideo.videoHeight}. Initializing model...`);
-
-  // ensure MediaPipe is initialized once video ready
-  if(!seg) await initSegmentation();
-
-  // start playback for preview (user may need to press play if autoplay blocked)
-  inputVideo.play().catch(()=> setStatus('Video paused by browser — press play to continue preview.'));
-
-  // begin rendering loop
-  requestAnimationFrame(renderLoop);
-});
-
-// Initialize MediaPipe SelfieSegmentation
-async function initSegmentation(){
-  setStatus('Loading MediaPipe SelfieSegmentation...');
-  seg = new SelfieSegmentation.SelfieSegmentation({
-    locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`
-  });
-  seg.setOptions({ modelSelection: 1 }); // high-quality
-  seg.onResults(onSegResults);
-  setStatus('Segmentation ready.');
-  // initialize compositor worker after seg ready
-  initCompositorWorker();
-}
-
-// Called when MediaPipe produces a segmentationMask (ImageBitmap)
-function onSegResults(results){
-  if(results && results.segmentationMask){
-    // segmentationMask is an HTMLImageElement / CanvasImageSource that can be transferred as an ImageBitmap
-    // Convert to ImageBitmap for fast transfer to worker
-    createImageBitmap(results.segmentationMask).then(bitmap => {
-      latestMask = bitmap;
-    }).catch(err => {
-      console.error('createImageBitmap failed', err);
-    });
-  }
-}
-
-// Render loop: capture input frame, send to worker when available
-async function renderLoop(){
-  if(inputVideo.readyState >= 2){
-    // draw current frame into inputCanvas for consistent capture
-    const icx = inputCanvas.getContext('2d');
-    icx.drawImage(inputVideo, 0, 0, inputCanvas.width, inputCanvas.height);
-
-    // get an ImageBitmap of the frame (fast, transferable)
-    if(!compositorBusy && latestMask){
-      const now = performance.now();
-      if(now - lastSentAt >= useThrottleMs){
-        try {
-          const frameBitmap = await createImageBitmap(inputCanvas);
-          // send frame and mask to worker (transfer both)
-          compositorBusy = true;
-          lastSentAt = now;
-          compositorWorker.postMessage({
-            type: 'process',
-            mode: modeSelect.value,
-            frame: frameBitmap,
-            mask: latestMask
-          }, [frameBitmap, latestMask]);
-          // note: we transferred latestMask ownership — after transfer we must null it to avoid reuse
-          latestMask = null;
-        } catch (err) {
-          console.error('createImageBitmap/send failed', err);
-          compositorBusy = false;
-        }
-      }
-    }
-  }
-  requestAnimationFrame(renderLoop);
-}
-
-// Initialize compositor worker from inline blob
-function initCompositorWorker(){
-  if(compositorWorker) return;
-  const workerCode = `
-
-    // Compositor worker: receives frames (ImageBitmap) and mask (ImageBitmap), applies temporal smoothing and compositing
-    let offscreen = null;
-    let offctx = null;
-    let width = 0, height = 0;
-    // Temporal smoothing: store previous alpha map as Float32Array scaled to small size
-    let smoothAlpha = null;
-    const smoothAlphaSize = 256; // use lower res for smoothing
-    const smoothingFactor = 0.67; // EMA alpha
-
-    self.onmessage = async (ev) => {
-      const data = ev.data;
-      if(data.type === 'init'){
-        width = data.width; height = data.height;
-        offscreen = new OffscreenCanvas(width, height);
-        offctx = offscreen.getContext('2d');
-        postMessage({ type:'init-done' });
-        return;
-      }
-      if(data.type === 'process'){
-        const { mode, frame, mask } = data;
-        // ensure offscreen is sized
-        if(!offscreen || offscreen.width !== frame.width || offscreen.height !== frame.height){
-          width = frame.width; height = frame.height;
-          offscreen = new OffscreenCanvas(width, height);
-          offctx = offscreen.getContext('2d');
-        }
-
-        try {
-          // 1. Create small mask canvas for smoothing
-          const small = new OffscreenCanvas(${Math.min(256, 1024)}, ${Math.min(256, 1024)});
-          const sc = small.getContext('2d');
-          sc.drawImage(mask, 0, 0, small.width, small.height);
-          // get alpha channel quickly
-          const imgdata = sc.getImageData(0,0,small.width, small.height);
-          const alpha = new Float32Array(small.width * small.height);
-          for(let i=0, j=0; i<imgdata.data.length; i+=4, j++){
-            alpha[j] = imgdata.data[i+3] / 255;
-          }
-
-          // initialize smoothAlpha if needed
-          if(!smoothAlpha || smoothAlpha.length !== alpha.length){
-            smoothAlpha = alpha.slice();
-          } else {
-            // EMA smoothing: smoothAlpha = smoothingFactor * smoothAlpha + (1 - smoothingFactor) * alpha
-            for(let k=0;k<alpha.length;k++){
-              smoothAlpha[k] = smoothingFactor * smoothAlpha[k] + (1 - smoothingFactor) * alpha[k];
-            }
-          }
-
-          // Reconstruct smoothed mask at full size into offscreen
-          // draw original frame first
-          offctx.clearRect(0,0,width,height);
-          offctx.drawImage(frame, 0, 0, width, height);
-
-          // Build an ImageData for mask scaled to full size
-          const maskFull = offctx.createImageData(width, height);
-          const sx = small.width, sy = small.height;
-          for(let y=0;y<height;y++){
-            const syPos = Math.floor(y * sy / height);
-            for(let x=0;x<width;x++){
-              const sxPos = Math.floor(x * sx / width);
-              const si = syPos * sx + sxPos;
-              const a = Math.min(1, Math.max(0, smoothAlpha[si])); // 0..1
-              const off = (y*width + x) * 4;
-              // white mask with alpha a
-              maskFull.data[off] = 255;
-              maskFull.data[off+1] = 255;
-              maskFull.data[off+2] = 255;
-              maskFull.data[off+3] = Math.round(a * 255);
-            }
-          }
-
-          // Draw the mask into a temporary canvas
-          const maskCanvas = new OffscreenCanvas(width, height);
-          const maskCtx = maskCanvas.getContext('2d');
-          maskCtx.putImageData(maskFull, 0, 0);
-
-          // Composite according to mode into result canvas
-          const result = new OffscreenCanvas(width, height);
-          const rctx = result.getContext('2d');
-          if(mode === 'blur'){
-            // create blurred background by scaling down/up
-            const tmp = new OffscreenCanvas(Math.max(1, Math.round(width/12)), Math.max(1, Math.round(height/12)));
-            const tc = tmp.getContext('2d');
-            tc.drawImage(frame, 0, 0, tmp.width, tmp.height);
-            rctx.save();
-            rctx.filter = 'blur(12px)';
-            rctx.drawImage(tmp, 0, 0, width, height);
-            rctx.restore();
-            // draw subject on top using mask (destination-in on frame)
-            rctx.save();
-            // draw masked subject
-            // create subject canvas: draw frame and use mask as alpha
-            const subject = new OffscreenCanvas(width, height);
-            const subjCtx = subject.getContext('2d');
-            subjCtx.drawImage(frame,0,0,width,height);
-            subjCtx.globalCompositeOperation = 'destination-in';
-            subjCtx.drawImage(maskCanvas,0,0,width,height);
-            subjCtx.globalCompositeOperation = 'source-over';
-            rctx.drawImage(subject, 0, 0);
-            rctx.restore();
-          } else if(mode === 'replace'){
-            // fill background color then draw subject
-            rctx.fillStyle = '#003344';
-            rctx.fillRect(0,0,width,height);
-            const subject = new OffscreenCanvas(width, height);
-            const subjCtx = subject.getContext('2d');
-            subjCtx.drawImage(frame,0,0,width,height);
-            subjCtx.globalCompositeOperation = 'destination-in';
-            subjCtx.drawImage(maskCanvas,0,0,width,height);
-            subjCtx.globalCompositeOperation = 'source-over';
-            rctx.drawImage(subject,0,0);
-          } else if(mode === 'transparent'){
-            // produce subject only on transparent background
-            rctx.clearRect(0,0,width,height);
-            const subject = new OffscreenCanvas(width, height);
-            const subjCtx = subject.getContext('2d');
-            subjCtx.drawImage(frame,0,0,width,height);
-            subjCtx.globalCompositeOperation = 'destination-in';
-            subjCtx.drawImage(maskCanvas,0,0,width,height);
-            subjCtx.globalCompositeOperation = 'source-over';
-            rctx.drawImage(subject,0,0);
-          } else { // auto (focus)
-            // try to keep person/animal: we assume mask was computed for person
-            // draw blurred background then subject similar to blur mode
-            const tmp = new OffscreenCanvas(Math.max(1, Math.round(width/12)), Math.max(1, Math.round(height/12)));
-            const tc = tmp.getContext('2d');
-            tc.drawImage(frame, 0, 0, tmp.width, tmp.height);
-            rctx.save(); rctx.filter = 'blur(10px)'; rctx.drawImage(tmp,0,0,width,height); rctx.restore();
-            const subject = new OffscreenCanvas(width, height);
-            const subjCtx = subject.getContext('2d');
-            subjCtx.drawImage(frame,0,0,width,height);
-            subjCtx.globalCompositeOperation = 'destination-in';
-            subjCtx.drawImage(maskCanvas,0,0,width,height);
-            subjCtx.globalCompositeOperation = 'source-over';
-            rctx.drawImage(subject,0,0);
-          }
-
-          // Convert result to ImageBitmap and post back (transfer)
-          const outBitmap = result.transferToImageBitmap();
-          // release frame & mask bitmaps if present (they were transferred in)
-          // send back
-          postMessage({ type:'result', bitmap: outBitmap }, [outBitmap]);
-
-          // close transferred bitmaps (the ownership moved)
-          if(frame && frame.close) try{ frame.close(); }catch(e){}
-          if(mask && mask.close) try{ mask.close(); }catch(e){}
-
-        } catch(err){
-          postMessage({ type:'error', message: err.message || String(err) });
-        }
-      }
-    };
-  `;
-  const blob = new Blob([workerCode], { type: 'application/javascript' });
-  const url = URL.createObjectURL(blob);
-  compositorWorker = new Worker(url);
-
-  compositorWorker.onmessage = (ev) => {
-    const data = ev.data;
-    if(data.type === 'init-done'){
-      setStatus('Compositor ready.');
-      return;
-    }
-    if(data.type === 'result'){
-      // draw returned ImageBitmap to processedCanvas
-      const bm = data.bitmap;
-      processedCtx.clearRect(0,0,processedCanvas.width, processedCanvas.height);
-      processedCtx.drawImage(bm, 0, 0, processedCanvas.width, processedCanvas.height);
-      // close bitmap after drawing
-      if(bm.close) try{ bm.close(); }catch(e){}
-      compositorBusy = false;
-      setProgress( Math.min(100, parseFloat(progressFill.style.width) + 0.3) );
-      progressText.textContent = 'Live';
-    } else if(data.type === 'error'){
-      console.error('Worker error:', data.message);
-      setStatus('Worker error: ' + data.message);
-      compositorBusy = false;
-    }
+document.getElementById('videoInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  video.src = URL.createObjectURL(file);
+  video.load();
+  video.onloadeddata = () => {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    statusEl.textContent = "Video loaded.";
   };
+});
 
-  // init worker sizes if video already loaded
-  if(inputVideo.videoWidth && inputVideo.videoHeight){
-    compositorWorker.postMessage({ type:'init', width: inputVideo.videoWidth, height: inputVideo.videoHeight });
-  }
+document.getElementById('startBtn').onclick = async () => {
+  if (!video.src) return;
+  statusEl.textContent = "Initializing detector...";
+  await Detector.init();
+  processing = true;
+  processLoop();
+};
+
+document.getElementById('stopBtn').onclick = () => processing = false;
+
+async function processLoop() {
+  if (!processing) return;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const mask = await Detector.processFrame(frame);
+  if (mask) Detector.applyMask(ctx, mask);
+  requestAnimationFrame(processLoop);
 }
-
-// Simple helpers
-function setStatus(s){ statusEl.textContent = s; console.log('[video_layer]', s); }
-function setProgress(p){ progressFill.style.width = Math.max(0, Math.min(100, p)) + '%'; }
-
-// Set up MediaPipe send: we will call seg.send({image: inputVideo}) periodically in a throttled loop
-let segmentationRunning = false;
-function startSegmentationLoop(){
-  if(!seg || segmentationRunning) return;
-  segmentationRunning = true;
-  (async function loop(){
-    while(segmentationRunning && !inputVideo.paused && !inputVideo.ended){
-      try {
-        // send current frame to MediaPipe; it will call onResults -> onSegResults -> set latestMask
-        await seg.send({ image: inputVideo });
-      } catch(err){
-        console.warn('seg.send error', err);
-      }
-      await new Promise(r => setTimeout(r, 80)); // ~12 fps segmentation
-    }
-    segmentationRunning = false;
-  })();
-}
-
-// Kick off segmentation and compositor when video plays
-inputVideo.addEventListener('play', () => {
-  if(!seg) initSegmentation();
-  startSegmentationLoop();
-  if(compositorWorker) compositorWorker.postMessage({ type:'init', width: inputVideo.videoWidth, height: inputVideo.videoHeight });
-});
-
-// When segmentation produces a mask (latestMask), createImageBitmap was already done in onResults -> latestMask
-// We send to worker in renderLoop when both frame and mask available
-
-// Rendering loop is already driving sending frames
-
-// Recording: capture processedCanvas via MediaRecorder
-startRecordBtn.addEventListener('click', () => {
-  if(mediaRecorder && mediaRecorder.state === 'recording') return;
-  recordedChunks = [];
-  const stream = processedCanvas.captureStream(25);
-  mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp8' });
-  mediaRecorder.ondataavailable = (e) => { if(e.data && e.data.size) recordedChunks.push(e.data); };
-  mediaRecorder.onstop = () => {
-    const blob = new Blob(recordedChunks, { type: 'video/webm' });
-    const url = URL.createObjectURL(blob);
-    // show link or auto-download
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `processed_${Date.now()}.webm`;
-    a.click();
-    setStatus('Saved processed video (webm).');
-    setProgress(100);
-  };
-  mediaRecorder.start();
-  startRecordBtn.disabled = true;
-  stopRecordBtn.disabled = false;
-  setStatus('Recording started.');
-});
-
-stopRecordBtn.addEventListener('click', () => {
-  if(mediaRecorder && mediaRecorder.state === 'recording') {
-    mediaRecorder.stop();
-    startRecordBtn.disabled = false;
-    stopRecordBtn.disabled = true;
-    setStatus('Recording stopped — encoding/saving...');
-  }
-});
-
-// renderLoop sends frames+mask to worker when available (throttled by lastSentAt and compositorBusy)
-function renderLoop(){
-  if(inputVideo.readyState >= 2){
-    // draw to inputCanvas (so we have a consistent pixel source)
-    const icx = inputCanvas.getContext('2d');
-    icx.drawImage(inputVideo, 0, 0, inputCanvas.width, inputCanvas.height);
-    // if mask ready and worker free, transfer them both
-    const now = performance.now();
-    if(latestMask && compositorWorker && !compositorBusy && (now - lastSentAt) >= useThrottleMs){
-      (async ()=>{
-        try {
-          const frameBitmap = await createImageBitmap(inputCanvas);
-          // latestMask is an ImageBitmap created in onSegResults (we did not transfer it earlier)
-          // Transfer both to worker
-          compositorBusy = true;
-          lastSentAt = now;
-          compositorWorker.postMessage({
-            type: 'process',
-            mode: modeSelect.value,
-            frame: frameBitmap,
-            mask: latestMask
-          }, [frameBitmap, latestMask]);
-          // newest mask ownership transferred — clear variable
-          latestMask = null;
-        } catch(err){
-          console.error('renderLoop transfer error', err);
-          compositorBusy = false;
-        }
-      })();
-    }
-  }
-  requestAnimationFrame(renderLoop);
-}
-
-// start render loop
-requestAnimationFrame(renderLoop);
-
-// small UI helpers
-setStatus('Ready. Load a video and press play.');
-
-// cleanup on unload
-window.addEventListener('unload', () => {
-  if(compositorWorker) compositorWorker.terminate();
-  if(seg) { /* no explicit dispose available for MediaPipe JS */ }
-});
 </script>
 </body>
 </html>
