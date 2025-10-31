@@ -1,0 +1,47 @@
+body {
+  font-family: sans-serif;
+  text-align: center;
+  background: #111;
+  color: #eee;
+  margin: 0;
+  padding: 20px;
+}
+
+#videoContainer {
+  position: relative;
+  display: inline-block;
+  margin-top: 10px;
+}
+
+#video, #canvas {
+  max-width: 90vw;
+  border-radius: 10px;
+  background: #000;
+}
+
+#canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+.controls {
+  margin-top: 10px;
+}
+
+button {
+  margin: 5px;
+  padding: 10px 20px;
+  font-size: 16px;
+  border: none;
+  border-radius: 6px;
+  background-color: #4a90e2;
+  color: white;
+  cursor: pointer;
+}
+
+button:disabled {
+  background-color: #555;
+  cursor: not-allowed;
+}
