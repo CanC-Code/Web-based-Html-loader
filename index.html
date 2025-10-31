@@ -3,52 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Local HTML Loader</title>
+<title>Local Program Loader</title>
 <style>
-  body {
-    background: #0d1117;
-    color: #c9d1d9;
-    font-family: Arial, sans-serif;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 2em;
-  }
-  h1 {
-    color: #58a6ff;
-    margin-bottom: 1em;
-  }
-  #fileList {
-    margin: 1em 0;
-    background: #161b22;
-    padding: 1em;
-    border-radius: 10px;
-    width: 100%;
-    max-width: 600px;
-  }
-  .file-item {
-    padding: 10px;
-    border-bottom: 1px solid #30363d;
-    cursor: pointer;
-    color: #c9d1d9;
-  }
-  .file-item:hover {
-    background: #21262d;
-  }
-  iframe {
-    width: 100%;
-    max-width: 900px;
-    height: 75vh;
-    border: 2px solid #30363d;
-    border-radius: 12px;
-    margin-top: 1.5em;
-    background: #000;
-  }
-  #status {
-    color: #8b949e;
-    margin-top: 1em;
-    font-size: 0.9rem;
-  }
+  body { background:#0d1117; color:#c9d1d9; font-family:Arial,sans-serif; display:flex; flex-direction:column; align-items:center; padding:2em; }
+  h1 { color:#58a6ff; margin-bottom:1em; }
+  #fileList { margin:1em 0; background:#161b22; padding:1em; border-radius:10px; width:100%; max-width:600px; }
+  .file-item { padding:10px; border-bottom:1px solid #30363d; cursor:pointer; color:#c9d1d9; }
+  .file-item:hover { background:#21262d; }
+  iframe { width:100%; max-width:900px; height:75vh; border:2px solid #30363d; border-radius:12px; margin-top:1.5em; background:#000; }
+  #status { color:#8b949e; margin-top:1em; font-size:0.9rem; }
 </style>
 </head>
 <body>
@@ -58,43 +21,37 @@
 
 <div id="fileList">Loading available programs...</div>
 
-<iframe id="programFrame"></iframe>
+<iframe id="programFrame" sandbox="allow-same-origin allow-scripts"></iframe>
 
 <div id="status">Ready.</div>
 
 <script>
+// Define files manually (GitHub Pages cannot list directories)
+const availableFiles = [
+  "video_layer.html"
+];
+
 const fileList = document.getElementById('fileList');
 const frame = document.getElementById('programFrame');
 const status = document.getElementById('status');
 
-// ⚙️ Manually define which files exist inside /web_files/
-// (since local GitHub Pages can’t auto-list directories)
-const availableFiles = [
-  "video_layer.html"
-  // add more HTML files here if needed
-];
-
-// Populate the list dynamically
-function loadFileList() {
+function loadFileList(){
   fileList.innerHTML = "";
-  if (availableFiles.length === 0) {
+  if(availableFiles.length === 0){
     fileList.innerHTML = "<p>No programs found in /web_files.</p>";
     return;
   }
-  availableFiles.forEach(name => {
-    const div = document.createElement("div");
+  availableFiles.forEach(name=>{
+    const div = document.createElement('div');
     div.className = "file-item";
     div.textContent = name;
-    div.onclick = () => loadProgram(name);
+    div.onclick = ()=> {
+      frame.src = `web_files/${name}`;
+      status.textContent = `Loaded: ${name}`;
+    };
     fileList.appendChild(div);
   });
   status.textContent = "Program list ready.";
-}
-
-// Load selected file into the iframe
-function loadProgram(filename) {
-  frame.src = `web_files/${filename}`;
-  status.textContent = `Loaded: ${filename}`;
 }
 
 loadFileList();
