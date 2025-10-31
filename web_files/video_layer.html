@@ -3,65 +3,75 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Video Layer — Multi-object Segmentation</title>
+<title>Video Layer — Live Multi-object Segmentation</title>
 <style>
-:root{--bg:#0d1117;--panel:#0f1720;--muted:#8b949e;--accent:#58a6ff;--btn:#238636;}
-body{margin:0;font-family:Inter,Arial,sans-serif;background:var(--bg);color:#c9d1d9;display:flex;flex-direction:column;align-items:center;padding:1rem;}
-h1{color:var(--accent);margin:0 0 0.75rem 0;font-size:1.2rem;}
-.topbar{display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;justify-content:center;margin-bottom:0.75rem;width:100%;max-width:1100px;}
-.control,input[type=file]{background:var(--panel);color:inherit;border:1px solid #21262d;padding:8px 12px;border-radius:8px;font-weight:600;cursor:pointer;}
-.control[disabled]{opacity:0.5;cursor:not-allowed;}
-#layout{display:grid;grid-template-columns:1fr 320px;gap:14px;width:100%;max-width:1100px;align-items:start;}
-#viewer{position:relative;background:#000;border-radius:10px;overflow:hidden;}
-video,canvas{display:block;width:100%;height:auto;max-width:100%;}
-#mainCanvas{position:absolute;left:0;top:0;pointer-events:none;}
-#sidebar{background:var(--panel);padding:12px;border-radius:10px;min-height:320px;color:#c9d1d9;}
-.section{margin-bottom:12px;}
-label{display:block;font-size:0.85rem;color:var(--muted);margin-bottom:6px;}
-.file-row{display:flex;gap:10px;align-items:center;}
-.list{max-height:220px;overflow:auto;border:1px solid #1f2933;border-radius:8px;padding:6px;background:#07080a;}
-.class-item{padding:6px;border-radius:6px;cursor:pointer;margin-bottom:6px;background:#0b1116;}
-.class-item.selected{outline:2px solid rgba(88,166,255,0.18);background:#081018;}
-.small{font-size:0.85rem;color:var(--muted);}
-.btn-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;}
-.accent{background:var(--accent);color:#061025;padding:6px 10px;border-radius:6px;cursor:pointer;font-weight:700;}
-.muted{background:#111827;color:var(--muted);padding:6px 8px;border-radius:6px;}
-#status{margin-top:10px;color:var(--muted);font-size:0.9rem;}
-.progress-bar{width:100%;height:12px;background:#21262d;border-radius:6px;overflow:hidden;margin-top:6px;}
-.progress-fill{height:100%;background:#238636;width:0%;transition:width 0.1s;}
-@media(max-width:920px){#layout{grid-template-columns:1fr;}#sidebar{order:2;}}
+  :root{--bg:#0d1117;--panel:#0f1720;--muted:#8b949e;--accent:#58a6ff;}
+  body{margin:0;font-family:Inter,Arial,sans-serif;background:var(--bg);color:#c9d1d9;display:flex;flex-direction:column;align-items:center;padding:1rem;}
+  h1{color:var(--accent);margin:0 0 0.75rem 0;font-size:1.2rem;}
+  .topbar{display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;justify-content:center;margin-bottom:0.75rem;width:100%;max-width:1100px;}
+  .control,input[type=file]{background:var(--panel);color:inherit;border:1px solid #21262d;padding:8px 12px;border-radius:8px;font-weight:600;cursor:pointer;}
+  #layout{display:grid;grid-template-columns:1fr 320px;gap:14px;width:100%;max-width:1100px;align-items:start;}
+  #viewer{position:relative;background:#000;border-radius:10px;overflow:hidden;}
+  video, canvas{display:block;width:100%;height:auto;max-width:100%;}
+  #mainCanvas{position:absolute;left:0;top:0;pointer-events:none;}
+  #sidebar{background:var(--panel);padding:12px;border-radius:10px;min-height:320px;color:#c9d1d9;}
+  .section{margin-bottom:12px;}
+  label{display:block;font-size:0.85rem;color:var(--muted);margin-bottom:6px;}
+  .list{max-height:220px;overflow:auto;border:1px solid #1f2933;border-radius:8px;padding:6px;background:#07080a;}
+  .class-item{padding:6px;border-radius:6px;cursor:pointer;margin-bottom:6px;background:#0b1116;}
+  .class-item.selected{outline:2px solid rgba(88,166,255,0.18);background:#081018;}
+  .small{font-size:0.85rem;color:var(--muted);}
+  .btn-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;}
+  .accent{background:var(--accent);color:#061025;padding:6px 10px;border-radius:6px;cursor:pointer;font-weight:700;}
+  .muted{background:#111827;color:var(--muted);padding:6px 8px;border-radius:6px;}
+  #status{margin-top:10px;color:var(--muted);font-size:0.9rem;}
+  #progressContainer{width:100%;background:#21262d;height:10px;border-radius:6px;overflow:hidden;margin-top:6px;}
+  #progressBar{height:100%;width:0%;background:var(--accent);}
+  @media(max-width:920px){#layout{grid-template-columns:1fr;}#sidebar{order:2;}}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/deeplab@0.2.2/dist/deeplab.min.js"></script>
 </head>
 <body>
-<h1>Video Layer — Multi-object Segmentation</h1>
-
+<h1>Video Layer — Live Multi-object Segmentation</h1>
 <div class="topbar">
-  <div class="file-row">
-    <input id="videoInput" type="file" accept="video/*" class="control"/>
-  </div>
-  <div class="btn-row">
-    <button id="toggleDepth" class="control muted">Toggle Depth Grid</button>
-    <button id="exportBtn" class="control" disabled>Export Processed Video</button>
-  </div>
+  <input id="videoInput" type="file" accept="video/*" class="control" />
+  <button id="toggleDepth" class="control muted">Toggle Depth Grid</button>
+  <button id="exportBtn" class="control" disabled>Export Processed Video</button>
 </div>
 
 <div id="layout">
   <div id="viewer">
-    <video id="video" playsinline controls></video>
+    <video id="video" playsinline controls style="width:100%; display:block;"></video>
     <canvas id="mainCanvas"></canvas>
   </div>
 
   <aside id="sidebar">
     <div class="section">
-      <label>Detected classes / layers</label>
+      <label>Detected classes / layers (click to select)</label>
       <div id="classList" class="list small">No segmentation yet.</div>
     </div>
 
     <div class="section">
-      <label>Process progress</label>
-      <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+      <label>Selected layer actions</label>
+      <div class="btn-row">
+        <button id="hideLayerBtn" class="control muted" disabled>Toggle Visible</button>
+        <button id="replaceColorBtn" class="control" disabled>Fill Color</button>
+        <input id="fillColor" type="color" value="#000000" style="padding:6px;border-radius:6px;border:none;"/>
+      </div>
+      <div class="btn-row" style="margin-top:8px;">
+        <button id="restoreBgBtn" class="control" disabled>Restore Background</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <label>Depth Grid</label>
+      <div class="small">Simulated depth zones (1..20)</div>
+    </div>
+
+    <div class="section">
+      <label>Export progress</label>
+      <div id="progressContainer"><div id="progressBar"></div></div>
     </div>
 
     <div id="status">Waiting for video...</div>
@@ -69,174 +79,130 @@ label{display:block;font-size:0.85rem;color:var(--muted);margin-bottom:6px;}
 </div>
 
 <script>
-const videoInput = document.getElementById('videoInput');
-const video = document.getElementById('video');
-const mainCanvas = document.getElementById('mainCanvas');
-const mainCtx = mainCanvas.getContext('2d');
-const classListEl = document.getElementById('classList');
-const statusEl = document.getElementById('status');
-const toggleDepthBtn = document.getElementById('toggleDepth');
-const exportBtn = document.getElementById('exportBtn');
-const progressFill = document.getElementById('progressFill');
+const videoInput=document.getElementById('videoInput');
+const toggleDepthBtn=document.getElementById('toggleDepth');
+const exportBtn=document.getElementById('exportBtn');
+const video=document.getElementById('video');
+const mainCanvas=document.getElementById('mainCanvas');
+const mainCtx=mainCanvas.getContext('2d');
+const classListEl=document.getElementById('classList');
+const statusEl=document.getElementById('status');
+const hideLayerBtn=document.getElementById('hideLayerBtn');
+const replaceColorBtn=document.getElementById('replaceColorBtn');
+const restoreBgBtn=document.getElementById('restoreBgBtn');
+const fillColorInput=document.getElementById('fillColor');
+const progressBar=document.getElementById('progressBar');
 
-let deeplabModel = null;
-let segResult = null;
-let classCanvases = {};
-let classesOrdered = [];
-let selectedClass = null;
-let showDepthGrid = false;
-let exportBlob = null;
-
-// Status helper
-function setStatus(msg){statusEl.textContent = msg;}
+let deeplabModel=null;
+let segResult=null;
+let classCanvases={};
+let classesOrdered=[];
+let selectedClass=null;
+let showDepthGrid=false;
 
 // Load best model automatically
-async function loadModel(){
-  setStatus('Loading DeepLab (ADE20K, full classes)...');
-  deeplabModel = await deeplab.load({base:'ade20k', quantizationBytes:2});
-  setStatus('Model loaded. Ready for video.');
-}
-loadModel();
+(async()=>{statusEl.textContent='Loading DeepLab ADE20K...';deeplabModel=await deeplab.load({base:'ade20k',quantizationBytes:2});statusEl.textContent='Model loaded. Ready to select video.';})();
 
-// Video load
-videoInput.addEventListener('change', async ()=>{
-  const file = videoInput.files[0];
-  if(!file) return;
-
-  video.pause();
-  video.src = URL.createObjectURL(file);
-  video.load();
-
-  await new Promise(resolve=>{video.oncanplay=()=>resolve();});
-  mainCanvas.width = video.videoWidth;
-  mainCanvas.height = video.videoHeight;
-
-  setStatus(`Video loaded (${video.videoWidth}×${video.videoHeight})`);
-  exportBtn.disabled = false;
-
+// Video load handling
+videoInput.addEventListener('change',async()=>{
+  const file=videoInput.files[0];if(!file)return;
+  video.pause();video.src=URL.createObjectURL(file);
+  await new Promise(r=>video.onloadedmetadata=r);
+  mainCanvas.width=video.videoWidth;mainCanvas.height=video.videoHeight;
+  statusEl.textContent=`Video loaded: ${video.videoWidth}×${video.videoHeight}`;
+  exportBtn.disabled=false;
   video.play();
   startDrawLoop();
+  runSegmentationOnce();
 });
 
 // Live draw loop
 function startDrawLoop(){
   function loop(){
-    drawFrame();
+    if(video.readyState>=2){
+      mainCtx.clearRect(0,0,mainCanvas.width,mainCanvas.height);
+      mainCtx.drawImage(video,0,0,mainCanvas.width,mainCanvas.height);
+      if(showDepthGrid) drawDepthGrid();
+      for(const cid of classesOrdered){
+        const meta=classCanvases[cid];
+        if(meta.visible&&meta.canvas){mainCtx.globalAlpha=0.5;mainCtx.drawImage(meta.canvas,0,0,mainCanvas.width,mainCanvas.height);mainCtx.globalAlpha=1;}
+      }
+    }
     requestAnimationFrame(loop);
   }
   loop();
 }
 
-// Draw frame + overlays
-function drawFrame(){
-  if(video.readyState < 2) return;
-  const w=mainCanvas.width,h=mainCanvas.height;
-  mainCtx.clearRect(0,0,w,h);
-  mainCtx.drawImage(video,0,0,w,h);
-
-  // Overlay class masks
-  for(const cid of classesOrdered){
-    const meta = classCanvases[cid];
-    if(meta.visible){
-      mainCtx.globalAlpha=0.5;
-      mainCtx.drawImage(meta.canvas,0,0,w,h);
-      mainCtx.globalAlpha=1.0;
-    }
-  }
-
-  if(showDepthGrid) drawDepthGrid();
-}
-
-// Depth grid
-function drawDepthGrid(){
-  const w=mainCanvas.width,h=mainCanvas.height;
-  mainCtx.save();
-  mainCtx.globalAlpha=0.15;
-  const zones=20;
-  for(let z=0;z<zones;z++){
-    const y=Math.round((z/zones)*h);
-    mainCtx.fillStyle=`hsl(${(z*18)%360} 60% ${50-z*1}%)`;
-    mainCtx.fillRect(0,y,w,Math.ceil(h/zones));
-  }
-  mainCtx.restore();
-}
-
-// Toggle depth grid
-toggleDepthBtn.addEventListener('click', ()=>{
-  showDepthGrid=!showDepthGrid;
-  toggleDepthBtn.textContent=showDepthGrid?'Depth: ON':'Toggle Depth Grid';
-});
-
-// Segmentation loop
-async function runSegmentation(){
-  if(!deeplabModel || video.readyState<2) return;
-  setStatus('Running segmentation...');
-  const off = document.createElement('canvas');
-  off.width=256; off.height=256;
-  const ctx=off.getContext('2d');
-  ctx.drawImage(video,0,0,off.width,off.height);
+// Segmentation
+async function runSegmentationOnce(){
+  if(!deeplabModel||!video.videoWidth) return;
+  statusEl.textContent='Running segmentation...';
+  const off=document.createElement('canvas');off.width=video.videoWidth;off.height=video.videoHeight;
+  const ctx=off.getContext('2d');ctx.drawImage(video,0,0,off.width,off.height);
   segResult=await deeplabModel.segment(off);
-
   buildClassCanvases(segResult);
-  setStatus('Segmentation ready.');
-  requestAnimationFrame(runSegmentation);
+  statusEl.textContent='Segmentation ready — classes: '+classesOrdered.map(id=>classCanvases[id].name).slice(0,6).join(', ');
 }
-runSegmentation();
 
-// Build per-class canvases
+// Build per-class mask canvases
 function buildClassCanvases(seg){
-  const w=mainCanvas.width,h=mainCanvas.height;
-  classCanvases={};
-  classesOrdered=[];
-  const numClasses=Object.keys(seg.legend||{}).length;
-  for(let i=0;i<numClasses;i++){
-    const c=document.createElement('canvas');
-    c.width=w;c.height=h;
-    const cx=c.getContext('2d');
-    // fill mask
-    const imgData=cx.createImageData(w,h);
+  const w=seg.width,h=seg.height;
+  const segMap=seg.segmentationMap;
+  let classIdMap;
+  if(segMap.length===w*h){classIdMap=segMap;}
+  else{
+    classIdMap=new Uint8ClampedArray(w*h);
+    const colorToId={};let nextId=0;
     for(let p=0;p<w*h;p++){
-      const alpha=Math.random()>0.5?255:0; // placeholder, real per-class mapping can be done
-      imgData.data[p*4+3]=alpha;
+      const r=segMap[p*4],g=segMap[p*4+1],b=segMap[p*4+2];const key=`${r},${g},${b}`;
+      if(!(key in colorToId))colorToId[key]=nextId++;
+      classIdMap[p]=colorToId[key];
     }
-    cx.putImageData(imgData,0,0);
-    classCanvases[i]={canvas:c,ctx:cx,visible:true,name:seg.legend[i]||('class-'+i)};
-    classesOrdered.push(i);
   }
-  populateClassUI();
+  const legend=seg.legend||{};
+  classCanvases={};
+  const presentIds=new Set();for(let i=0;i<w*h;i++)presentIds.add(classIdMap[i]);
+  classesOrdered=Array.from(presentIds).sort((a,b)=>a-b);
+  classesOrdered.forEach(cid=>{
+    const c=document.createElement('canvas');c.width=w;c.height=h;
+    const cx=c.getContext('2d');const maskImg=cx.createImageData(w,h);
+    for(let p=0;p<w*h;p++){const match=(classIdMap[p]===cid);const off=p*4;maskImg.data[off]=255;maskImg.data[off+1]=255;maskImg.data[off+2]=255;maskImg.data[off+3]=match?255:0;}
+    cx.putImageData(maskImg,0,0);
+    classCanvases[cid]={canvas:c,ctx:cx,visible:true,replaceColor:null,name:legend[cid]||('class-'+cid)};
+  });
+  populateClassListUI();
 }
 
 // Populate class list
-function populateClassUI(){
-  classListEl.innerHTML='';
-  for(const cid of classesOrdered){
-    const div=document.createElement('div');
-    div.className='class-item';
-    div.textContent=classCanvases[cid].name;
-    div.onclick=()=>selectClass(cid,div);
-    classListEl.appendChild(div);
-  }
-}
+function populateClassListUI(){classListEl.innerHTML='';if(!classesOrdered.length){classListEl.textContent='No segmentation classes yet.';return;}
+classesOrdered.forEach(cid=>{const meta=classCanvases[cid];const div=document.createElement('div');div.className='class-item';div.textContent=`${meta.name} (id:${cid})`;div.onclick=()=>selectClass(cid,div);classListEl.appendChild(div);});}
 
 // Select class
-function selectClass(cid,el){
-  selectedClass=cid;
-  Array.from(classListEl.children).forEach(ch=>ch.classList.remove('selected'));
-  if(el) el.classList.add('selected');
-}
+function selectClass(cid,el){selectedClass=cid;Array.from(classListEl.children).forEach(ch=>ch.classList.remove('selected'));if(el)el.classList.add('selected');hideLayerBtn.disabled=false;replaceColorBtn.disabled=false;restoreBgBtn.disabled=false;statusEl.textContent='Selected: '+classCanvases[cid].name;}
 
-// Export (FFmpeg.js placeholder)
-exportBtn.addEventListener('click', async ()=>{
-  setStatus('Processing video for export...');
-  progressFill.style.width='0%';
-  const duration=video.duration||10;
-  const frames=100;
-  for(let i=0;i<=frames;i++){
-    await new Promise(r=>setTimeout(r,50));
-    progressFill.style.width=`${(i/frames*100).toFixed(0)}%`;
-  }
-  setStatus('Export complete (demo).');
-});
+// Layer buttons
+hideLayerBtn.onclick=()=>{if(selectedClass==null)return;classCanvases[selectedClass].visible=!classCanvases[selectedClass].visible;hideLayerBtn.textContent=classCanvases[selectedClass].visible?'Hide Layer':'Show Layer';};
+replaceColorBtn.onclick=()=>{if(selectedClass==null)return;classCanvases[selectedClass].replaceColor=fillColorInput.value;statusEl.textContent='Applied fill color to '+classCanvases[selectedClass].name;};
+restoreBgBtn.onclick=()=>{if(selectedClass==null)return;classCanvases[selectedClass].visible=false;classCanvases[selectedClass].replaceColor=null;statusEl.textContent='Restored background for '+classCanvases[selectedClass].name;};
+
+// Depth grid
+toggleDepthBtn.onclick=()=>{showDepthGrid=!showDepthGrid;toggleDepthBtn.textContent=showDepthGrid?'Depth: ON':'Toggle Depth Grid';};
+function drawDepthGrid(){const w=mainCanvas.width,h=mainCanvas.height;const zones=20;mainCtx.save();mainCtx.globalAlpha=0.22;for(let z=0;z<zones;z++){const fy=1-(z/(zones-1));const y=Math.round((1-fy)*h);const zoneHeight=Math.max(2,Math.round(h/zones));mainCtx.fillStyle=`hsl(${(z*18)%360} 60% ${60-z*1}%)`;mainCtx.fillRect(0,y,w,zoneHeight);}mainCtx.globalAlpha=0.12;mainCtx.strokeStyle='#000';mainCtx.lineWidth=1;for(let r=0;r<=10;r++){const y=Math.round((r/10)*h);mainCtx.beginPath();mainCtx.moveTo(0,y);mainCtx.lineTo(w,y);mainCtx.stroke();}mainCtx.restore();}
+
+// Export (simple MediaRecorder)
+exportBtn.onclick=async()=>{
+  if(!video.src)return;statusEl.textContent='Recording processed video...';progressBar.style.width='0%';
+  const fps=25;const stream=mainCanvas.captureStream(fps);const recChunks=[];const mr=new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp8'});
+  mr.ondataavailable=e=>{if(e.data&&e.data.size)recChunks.push(e.data);};
+  mr.onstop=()=>{
+    const blob=new Blob(recChunks,{type:'video/webm'});const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=`processed_${Date.now()}.webm`;a.click();
+    statusEl.textContent='Export complete.';progressBar.style.width='100%';
+  };
+  mr.start();
+  const duration=video.duration;video.currentTime=0;video.play();
+  const interval=setInterval(()=>{progressBar.style.width=Math.min(100,(video.currentTime/duration*100))+'%';if(video.ended){clearInterval(interval);mr.stop();}},100);
+};
 </script>
 </body>
 </html>
