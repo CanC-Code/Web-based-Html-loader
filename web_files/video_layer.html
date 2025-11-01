@@ -5,110 +5,156 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Video Background Remover</title>
 <style>
-  body {
-    background: #0d1117;
-    color: #c9d1d9;
-    font-family: Arial, sans-serif;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: 2em;
-  }
-  h1 { color: #58a6ff; margin-bottom: 1em; }
-  #controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 1em; margin-bottom: 1em; }
-  button, input[type=file], select {
-    background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
-    padding: 0.5em 1em; border-radius: 8px; cursor: pointer;
-  }
-  button:hover, select:hover, input[type=file]:hover { background: #30363d; }
-  video, canvas {
-    width: 90%; max-width: 800px; border-radius: 10px;
-    margin-top: 1em; border: 2px solid #30363d;
-  }
-  #status { margin-top: 1em; font-size: 0.9rem; color: #8b949e; }
+body {
+  background: #0d1117;
+  color: #c9d1d9;
+  font-family: Arial, sans-serif;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2em;
+}
+h1 { color: #58a6ff; margin-bottom: 1em; text-align: center; }
+#controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 1em; margin-bottom: 1em; }
+button, input[type=file], select {
+  background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+  padding: 0.5em 1em; border-radius: 8px; cursor: pointer;
+}
+video, canvas { width: 90%; max-width: 800px; border-radius: 10px; margin-top: 1em; border: 2px solid #30363d; }
+#status { margin-top: 1em; font-size: 0.9rem; color: #8b949e; }
 </style>
 </head>
 <body>
 
-<h1>🎥 Background Remover (OpenCV.js)</h1>
+<h1>🎥 AI Background Remover</h1>
 
 <div id="controls">
   <input type="file" id="videoInput" accept="video/*">
   <select id="modeSelect">
     <option value="motion">Motion</option>
     <option value="all">Edges</option>
-    <option value="threshold">Simple Threshold</option>
+    <option value="threshold">Threshold</option>
   </select>
   <button id="startBtn">Start Processing</button>
   <button id="stopBtn">Stop</button>
+  <button id="saveBtn">Download Result</button>
 </div>
 
-<video id="video" controls></video>
-<canvas id="output"></canvas>
+<video id="outputVideo" controls></video>
+<canvas id="processCanvas" style="display:none;"></canvas>
 <div id="status">Status: Waiting for video...</div>
 
 <script>
-let video = document.getElementById("video");
-let canvas = document.getElementById("output");
-let ctx = canvas.getContext("2d");
-let status = document.getElementById("status");
+const videoInput = document.getElementById("videoInput");
+const modeSelect = document.getElementById("modeSelect");
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+const saveBtn = document.getElementById("saveBtn");
+const status = document.getElementById("status");
+
+const outputVideo = document.getElementById("outputVideo");
+const processCanvas = document.getElementById("processCanvas");
+const ctx = processCanvas.getContext("2d");
+
+let video = document.createElement("video");
+video.muted = true;
 
 let worker = new Worker("detector-worker.js");
-let mode = document.getElementById("modeSelect").value;
+let pendingProcess = null;
 let processing = false;
+let recorder = null;
+let recordedBlobs = [];
 
-worker.onmessage = (e) => {
-  if (e.data.type === "log") {
-    status.textContent = "Log: " + e.data.msg;
-  } else if (e.data.type === "mask") {
-    const { maskData, width, height } = e.data;
-    const mask = new ImageData(new Uint8ClampedArray(maskData), width, height);
-    ctx.putImageData(mask, 0, 0);
-  }
-};
-
-document.getElementById("modeSelect").onchange = e => mode = e.target.value;
-
-document.getElementById("videoInput").onchange = e => {
+// --- Video load ---
+videoInput.addEventListener("change", e => {
   const file = e.target.files[0];
-  if (file) {
-    const url = URL.createObjectURL(file);
-    video.src = url;
-    status.textContent = "Loaded video: " + file.name;
-  }
-};
+  if (!file) return;
 
-document.getElementById("startBtn").onclick = () => {
-  if (!video.src) {
-    alert("Please select a video file first.");
-    return;
-  }
+  video.src = URL.createObjectURL(file);
+  video.load();
+  video.onloadeddata = () => {
+    processCanvas.width = video.videoWidth;
+    processCanvas.height = video.videoHeight;
+    outputVideo.width = video.videoWidth;
+    outputVideo.height = video.videoHeight;
+    status.textContent = `Loaded video: ${file.name} (${video.videoWidth}x${video.videoHeight})`;
+    startBtn.disabled = false;
+  };
+});
+
+// --- Start processing ---
+startBtn.addEventListener("click", async () => {
+  if (!video.src) { alert("Select a video first"); return; }
+
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  saveBtn.disabled = true;
   processing = true;
-  processVideoFrame();
-};
+  recordedBlobs = [];
 
-document.getElementById("stopBtn").onclick = () => {
+  // Initialize MediaRecorder for final output
+  const stream = processCanvas.captureStream(30);
+  recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp8" });
+  recorder.ondataavailable = ev => { if(ev.data && ev.data.size) recordedBlobs.push(ev.data); };
+  recorder.start(1000);
+
+  video.currentTime = 0;
+  await video.play().catch(()=>{});
+  status.textContent = "Processing started...";
+  processLoop();
+});
+
+// --- Stop processing ---
+stopBtn.addEventListener("click", () => {
   processing = false;
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  saveBtn.disabled = recordedBlobs.length === 0;
+  if(recorder && recorder.state === "recording") recorder.stop();
   status.textContent = "Processing stopped.";
-};
+});
 
-function processVideoFrame() {
+// --- Download result ---
+saveBtn.addEventListener("click", () => {
+  if (recordedBlobs.length === 0) return alert("No video recorded.");
+  const blob = new Blob(recordedBlobs, { type:"video/webm" });
+  const url = URL.createObjectURL(blob);
+  outputVideo.src = url;
+  outputVideo.play();
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `processed_${Date.now()}.webm`;
+  a.click();
+  status.textContent = "Video saved!";
+});
+
+// --- Frame processing loop ---
+function processLoop() {
   if (!processing) return;
-  if (video.paused || video.ended) {
-    requestAnimationFrame(processVideoFrame);
+  if(video.paused || video.ended){
+    requestAnimationFrame(processLoop);
     return;
   }
 
-  // Draw current frame on canvas
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  ctx.drawImage(video, 0, 0, processCanvas.width, processCanvas.height);
+  const frame = ctx.getImageData(0, 0, processCanvas.width, processCanvas.height);
 
-  // Send frame to worker
-  const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  worker.postMessage({ type: "process", frame, mode });
+  if(!pendingProcess){
+    pendingProcess = new Promise(resolve => {
+      worker.onmessage = e => {
+        if(e.data.type==="mask"){
+          const mask = new ImageData(new Uint8ClampedArray(e.data.maskData), e.data.width, e.data.height);
+          // apply mask to canvas (background removal)
+          ctx.putImageData(mask, 0, 0);
+        }
+        pendingProcess = null;
+        resolve();
+      };
+      worker.postMessage({ type:"process", frame, mode: modeSelect.value });
+    });
+  }
 
-  requestAnimationFrame(processVideoFrame);
+  requestAnimationFrame(processLoop);
 }
 </script>
 
