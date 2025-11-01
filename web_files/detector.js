@@ -1,56 +1,52 @@
-// detector.js — bridge between main thread and worker
+// detector.js — interface to detector-worker.js
 class Detector {
-  static worker = null;
-  static ready = false;
+  constructor() {
+    this.worker = null;
+    this.ready = false;
+  }
 
-  static async init() {
-    if (this.worker) return;
+  async init({ mode = "remove" } = {}) {
+    if (this.ready) return;
     this.worker = new Worker("detector-worker.js");
-    this.worker.onmessage = e => {
-      const { type, maskData, width, height, msg } = e.data;
-      if (type === "log") console.log("[Worker]", msg);
-      else if (type === "mask") {
-        if (Detector.onMask) {
-          const arr = new Uint8ClampedArray(maskData);
-          Detector.onMask({ data: arr, width, height });
-        }
-      } else if (type === "error") console.error("[Worker]", msg);
+    this.mode = mode;
+
+    this.worker.onmessage = (e) => {
+      const { type, msg } = e.data;
+      if (type === "log") console.log("[Detector]", msg);
     };
-    return new Promise(resolve => {
-      const checkReady = msg => {
-        if (msg.type === "log" && msg.msg === "Detector ready") {
-          Detector.ready = true;
-          resolve();
+
+    this.ready = true;
+  }
+
+  async processFrame(frame, { mode } = {}) {
+    if (!this.ready) throw new Error("Detector not initialized");
+    const ctx = new OffscreenCanvas(frame.width, frame.height).getContext("2d");
+    ctx.putImageData(frame, 0, 0);
+    const bitmap = ctx.canvas.transferToImageBitmap();
+
+    return new Promise((resolve) => {
+      const listener = (e) => {
+        if (e.data.type === "mask") {
+          resolve(new ImageData(
+            new Uint8ClampedArray(e.data.maskData),
+            e.data.width,
+            e.data.height
+          ));
+          this.worker.removeEventListener("message", listener);
         }
       };
-      this.worker.onmessage = e => {
-        checkReady(e.data);
-        // always forward mask/error
-        if (Detector.onMask) Detector.onMask(e.data);
-      };
+      this.worker.addEventListener("message", listener);
+      this.worker.postMessage({ type: "process", frame: bitmap, mode: mode || this.mode }, [bitmap]);
     });
   }
 
-  static processFrame(frame, mode = "remove") {
-    if (!this.worker || !this.ready) return;
-    this.worker.postMessage({ type: "process", frame, mode });
-  }
-
-  static applyMask(ctx, maskObj, mode = "remove") {
-    if (!maskObj) return;
-    const { data, width, height } = maskObj;
-    const mask = new ImageData(data, width, height);
-
-    // draw original frame
-    ctx.globalCompositeOperation = "source-over";
-
-    if (mode === "remove") {
-      ctx.globalCompositeOperation = "destination-in"; // keep only human
-    } else if (mode === "blur") {
-      ctx.globalCompositeOperation = "destination-in";
-    }
-
+  applyMask(ctx, mask) {
+    if (!mask) return;
+    ctx.save();
+    ctx.globalCompositeOperation = "destination-in";
     ctx.putImageData(mask, 0, 0);
-    ctx.globalCompositeOperation = "source-over";
+    ctx.restore();
   }
 }
+
+window.Detector = new Detector();
