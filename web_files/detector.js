@@ -3,6 +3,7 @@ let Detector = {
   worker: null,
   ready: false,
   maskCallback: null,
+  mode: "human",
 
   async init({ mode="human" }={}) {
     if (!window.Worker) throw new Error("Web Workers not supported");
@@ -15,17 +16,11 @@ let Detector = {
       this.worker.onmessage = e => {
         const msg = e.data;
         if (msg.type === "log") console.log("[detector]", msg.msg);
+
         if (msg.type === "mask" && this.maskCallback) {
-          // create ImageData for canvas
-          let maskImg;
-          if (msg.maskData instanceof Uint8ClampedArray) {
-            maskImg = new ImageData(new Uint8ClampedArray(msg.maskData), msg.width, msg.height);
-          } else {
-            // MediaPipe returns HTMLImageElement/Canvas
-            maskImg = msg.maskData;
-          }
-          this.maskCallback(maskImg);
+          this.maskCallback(msg.maskData);
         }
+
         if (!this.ready) { this.ready = true; resolve(); }
       };
       this.worker.onerror = err => reject(err);
@@ -46,17 +41,30 @@ let Detector = {
 
   applyMask(ctx, mask) {
     if (!mask) return;
-    // mask can be ImageData or Canvas
-    if (mask instanceof ImageData) {
+
+    // blur mode: composite human over blurred background
+    if (this.mode === "blur") {
+      const w = ctx.canvas.width;
+      const h = ctx.canvas.height;
+
+      // step 1: draw original frame blurred
+      ctx.save();
+      ctx.filter = "blur(12px)";
+      ctx.drawImage(ctx.canvas, 0, 0, w, h);
+      ctx.restore();
+
+      // step 2: overlay human using mask
       ctx.save();
       ctx.globalCompositeOperation = "destination-in";
-      const tempCanvas = document.createElement("canvas");
-      tempCanvas.width = mask.width; tempCanvas.height = mask.height;
-      tempCanvas.getContext("2d").putImageData(mask, 0, 0);
-      ctx.drawImage(tempCanvas, 0, 0, ctx.canvas.width, ctx.canvas.height);
+      ctx.drawImage(mask, 0, 0, w, h);
+      ctx.restore();
+
+      // step 3: overlay original human over blurred background
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-over";
+      ctx.drawImage(ctx.canvas, 0, 0, w, h);
       ctx.restore();
     } else {
-      // assume HTMLImageElement / Canvas
       ctx.save();
       ctx.globalCompositeOperation = "destination-in";
       ctx.drawImage(mask, 0, 0, ctx.canvas.width, ctx.canvas.height);
