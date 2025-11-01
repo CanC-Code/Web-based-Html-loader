@@ -1,47 +1,41 @@
-// detector.js
-class Detector {
-  constructor() {
-    this.worker = new Worker("detector-worker.js");
-    this.ready = false;
-    this.queue = [];
-    this.worker.onmessage = e => {
-      const { type, mask, width, height, mode } = e.data;
-      if(type === "ready") { this.ready = true; }
-      if(type === "frameResult") {
-        const callback = this.queue.shift();
-        if(callback) callback(mask, width, height, mode);
-      }
-    };
-    this.worker.postMessage({ type: "init" });
-  }
+// detector.js — UI + worker bridge
+const worker = new Worker("detector-worker.js");
+let maskHistory = [];
+let pendingProcess = null;
 
-  processFrame(frame, width, height, mode) {
-    return new Promise(resolve => {
-      this.queue.push(resolve);
-      this.worker.postMessage({ type: "process", frame, width, height, mode });
-    });
-  }
+worker.onmessage = e => {
+  const { type, maskData, width, height, msg } = e.data;
+  if(type === "mask"){
+    const mask = new ImageData(new Uint8ClampedArray(maskData), width, height);
+    maskHistory.push(mask);
+    if(maskHistory.length > 10) maskHistory.shift();
+    if(typeof currentCtx !== "undefined") applyMask(currentCtx, mask);
+  } else if(type==="log") console.log("[Worker]", msg);
+};
 
-  applyMask(ctx, mask, width, height, mode) {
-    if(!mask) return;
-    const maskCanvas = document.createElement("canvas");
-    maskCanvas.width = width;
-    maskCanvas.height = height;
-    const maskCtx = maskCanvas.getContext("2d");
-    maskCtx.drawImage(mask, 0, 0, width, height);
-
-    if(mode === "remove") {
-      ctx.globalCompositeOperation = 'destination-in';
-      ctx.drawImage(maskCanvas, 0, 0, width, height);
-    } else if(mode === "blur") {
-      ctx.globalCompositeOperation = 'destination-over';
-      ctx.filter = "blur(10px)";
-      ctx.drawImage(maskCanvas, 0, 0, width, height);
-      ctx.filter = "none";
-    }
-    ctx.globalCompositeOperation = 'source-over';
-  }
+// Apply mask overlay
+function applyMask(ctx, mask){
+  const temp = new ImageData(new Uint8ClampedArray(mask.data), mask.width, mask.height);
+  const tCanvas = document.createElement("canvas");
+  tCanvas.width = mask.width;
+  tCanvas.height = mask.height;
+  tCanvas.getContext("2d").putImageData(temp,0,0);
+  ctx.save();
+  ctx.globalCompositeOperation="destination-in";
+  ctx.drawImage(tCanvas,0,0,ctx.canvas.width,ctx.canvas.height);
+  ctx.restore();
 }
 
-// Singleton instance
-const DetectorInstance = new Detector();
+// Send frame for processing
+function processFrame(frame, mode){
+  return new Promise(resolve=>{
+    pendingProcess = true;
+    worker.postMessage({ type:"process", frame, mode });
+    setTimeout(()=>{ pendingProcess=false; resolve(); }, 0);
+  });
+}
+
+// Send feedback
+function sendFeedback(mask, feedback){
+  worker.postMessage({ type:"feedback", mask, feedback });
+}
