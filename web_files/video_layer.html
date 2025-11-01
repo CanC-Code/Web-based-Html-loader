@@ -3,77 +3,77 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Video Layer — AI Processor</title>
+<title>AI Hybrid Video Processor</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
 <header>
-<h1>Video Layer — AI Processor</h1>
-<p class="lead">Load a video, choose processing mode, start processing, approve or reject frames, then save final video.</p>
+<h1>Hybrid AI Video Processor</h1>
+<p class="lead">Load video → select effect → Process → Watch → Like/Dislike → Regenerate → Save at any time.</p>
 </header>
 
 <main>
-  <section class="mediaBox">
-    <div class="mediaInner">
-      <input type="file" id="videoInput" accept="video/*">
-      <video id="inputVideo" playsinline controls></video>
-      <canvas id="outputCanvas" aria-label="Processed output"></canvas>
-    </div>
-  </section>
-
-  <section class="controls">
-    <select id="modeSelect" class="aux">
-      <option value="motion">Motion (dynamic objects)</option>
-      <option value="all">All edges</option>
-      <option value="human">Humans only</option>
-    </select>
-
-    <button id="processBtn">Process Video</button>
-    <button id="stopBtn" disabled>Stop</button>
-    <button id="likeBtn" disabled>Like Frame</button>
-    <button id="dislikeBtn" disabled>Dislike Frame</button>
-    <button id="saveBtn" disabled>Save Result</button>
-  </section>
-
-  <div class="progressWrap">
-    <div class="progress"><div id="progressFill"></div></div>
+<section class="mediaBox">
+  <div class="mediaInner">
+    <input type="file" id="videoInput" accept="video/*">
+    <video id="inputVideo" playsinline controls></video>
+    <canvas id="outputCanvas" aria-label="Processed output"></canvas>
   </div>
+</section>
 
-  <div id="status">Ready.</div>
+<section class="controls">
+  <select id="modeSelect" class="aux">
+    <option value="motion">Motion</option>
+    <option value="all">All Edges</option>
+    <option value="human">Humans Only</option>
+  </select>
+  <button id="processBtn">Process</button>
+  <button id="stopBtn" disabled>Stop</button>
+  <button id="likeBtn" disabled>Like Frame</button>
+  <button id="dislikeBtn" disabled>Dislike Frame</button>
+  <button id="regenerateBtn" disabled>Regenerate</button>
+  <button id="saveBtn" disabled>Save</button>
+</section>
+
+<div class="progressWrap">
+  <div class="progress"><div id="progressFill"></div></div>
+</div>
+
+<div id="status">Ready.</div>
 </main>
 
 <script src="detector.js"></script>
 <script>
-const videoInput = document.getElementById("videoInput");
-const inputVideo = document.getElementById("inputVideo");
-const outCanvas = document.getElementById("outputCanvas");
-const currentCtx = outCanvas.getContext("2d");
+const videoInput=document.getElementById("videoInput");
+const inputVideo=document.getElementById("inputVideo");
+const outCanvas=document.getElementById("outputCanvas");
+const currentCtx=outCanvas.getContext("2d");
 
-const modeSelect = document.getElementById("modeSelect");
-const processBtn = document.getElementById("processBtn");
-const stopBtn = document.getElementById("stopBtn");
-const likeBtn = document.getElementById("likeBtn");
-const dislikeBtn = document.getElementById("dislikeBtn");
-const saveBtn = document.getElementById("saveBtn");
+const modeSelect=document.getElementById("modeSelect");
+const processBtn=document.getElementById("processBtn");
+const stopBtn=document.getElementById("stopBtn");
+const likeBtn=document.getElementById("likeBtn");
+const dislikeBtn=document.getElementById("dislikeBtn");
+const regenerateBtn=document.getElementById("regenerateBtn");
+const saveBtn=document.getElementById("saveBtn");
 
-const progressFill = document.getElementById("progressFill");
-const statusEl = document.getElementById("status");
+const progressFill=document.getElementById("progressFill");
+const statusEl=document.getElementById("status");
 
-let processing = false;
-let recordedBlobs = [];
-let recorder = null;
+let processing=false;
+let recordedBlobs=[];
+let recorder=null;
 
 function setStatus(s){ statusEl.textContent=s; console.log("[video_layer]",s);}
 function setProgress(p){ progressFill.style.width=`${Math.max(0,Math.min(100,p))}%`; }
 
-// Load video
 videoInput.addEventListener("change", e=>{
-  const file = e.target.files[0];
+  const file=e.target.files[0];
   if(!file) return;
-  inputVideo.src = URL.createObjectURL(file);
+  inputVideo.src=URL.createObjectURL(file);
   inputVideo.load();
-  inputVideo.onloadeddata = ()=>{
+  inputVideo.onloadeddata=()=>{
     outCanvas.width=inputVideo.videoWidth;
     outCanvas.height=inputVideo.videoHeight;
     setStatus(`Video loaded: ${inputVideo.videoWidth}x${inputVideo.videoHeight}`);
@@ -81,19 +81,19 @@ videoInput.addEventListener("change", e=>{
   };
 });
 
-// Start processing
 processBtn.addEventListener("click", async ()=>{
   if(!inputVideo.src){ setStatus("Load a video first"); return; }
   processBtn.disabled=true;
   stopBtn.disabled=false;
   likeBtn.disabled=false;
   dislikeBtn.disabled=false;
+  regenerateBtn.disabled=false;
   saveBtn.disabled=true;
 
   recordedBlobs=[];
   try{
-    const stream = outCanvas.captureStream(30);
-    recorder = new MediaRecorder(stream,{mimeType:"video/webm;codecs=vp8"});
+    const stream=outCanvas.captureStream(30);
+    recorder=new MediaRecorder(stream,{mimeType:"video/webm;codecs=vp8"});
     recorder.ondataavailable=ev=>{ if(ev.data && ev.data.size) recordedBlobs.push(ev.data); };
     recorder.start(500);
   }catch(err){ console.warn(err); recorder=null; }
@@ -112,6 +112,7 @@ stopBtn.addEventListener("click", ()=>{
   stopBtn.disabled=true;
   likeBtn.disabled=true;
   dislikeBtn.disabled=true;
+  regenerateBtn.disabled=true;
   if(recorder && recorder.state==="recording") recorder.stop();
   saveBtn.disabled=recordedBlobs.length===0;
   setStatus("Processing stopped.");
@@ -124,32 +125,74 @@ dislikeBtn.addEventListener("click", ()=>{
   if(maskHistory.length>0) sendFeedback(maskHistory[maskHistory.length-1],"dislike");
 });
 
-saveBtn.addEventListener("click", ()=>{
-  if(recordedBlobs.length===0){ setStatus("Nothing recorded"); return; }
-  const blob = new Blob(recordedBlobs,{type:"video/webm"});
-  const a=document.createElement("a");
-  a.href=URL.createObjectURL(blob);
-  a.download=`processed_${Date.now()}.webm`;
-  a.click();
-  setStatus("Video saved.");
+regenerateBtn.addEventListener("click", ()=>{
+  if(!processing){
+    setStatus("Restarting processing for regeneration...");
+    inputVideo.currentTime=0;
+    recordedBlobs=[];
+    if(recorder && recorder.state==="recording") recorder.stop();
+    processBtn.click();
+  } else {
+    setStatus("Already processing...");
+  }
 });
 
-async function processLoop(){
+saveBtn.addEventListener("click", ()=>{
+  if(recordedBlobs.length===0){ setStatus("Nothing recorded yet."); return; }
+  const blob=new Blob(recordedBlobs,{type:"video/webm"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;
+  a.download=`processed_${Date.now()}.webm`;
+  a.click();
+  setStatus("Saved processed video.");
+});
+
+let lastTimestamp=0;
+const targetMs=33; // ~30 FPS
+
+async function processLoop(timestamp){
   if(!processing) return;
+
+  // Draw current frame
   currentCtx.clearRect(0,0,outCanvas.width,outCanvas.height);
   currentCtx.drawImage(inputVideo,0,0,outCanvas.width,outCanvas.height);
-  if(inputVideo.duration){
+
+  // Throttle frame processing
+  if(performance.now()-lastTimestamp>=targetMs && !pendingProcess){
+    lastTimestamp=performance.now();
+    try{
+      const frame=currentCtx.getImageData(0,0,outCanvas.width,outCanvas.height);
+      pendingProcess=true;
+      await processFrame(frame, modeSelect.value);
+      pendingProcess=false;
+    }catch(err){
+      console.error("Frame processing error:", err);
+      pendingProcess=false;
+    }
+  }
+
+  // Update progress
+  if(inputVideo.duration && !isNaN(inputVideo.duration) && inputVideo.duration>0){
     const pct=Math.min(100,(inputVideo.currentTime/inputVideo.duration)*100);
     setProgress(pct);
   }
 
-  if(!pendingProcess){
-    const frame=currentCtx.getImageData(0,0,outCanvas.width,outCanvas.height);
-    pendingProcess=true;
-    await processFrame(frame,modeSelect.value);
-  }
-
   requestAnimationFrame(processLoop);
+}
+
+// Prevent accidental navigation
+window.addEventListener("beforeunload", (e)=>{
+  if(processing){
+    e.preventDefault();
+    e.returnValue='';
+  }
+});
+
+// Safety: check detector
+if(typeof processFrame==="undefined"){
+  setStatus("Detector module not loaded.");
+  processBtn.disabled=true;
 }
 </script>
 </body>
