@@ -3,159 +3,153 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Video Background Remover</title>
+<title>AI Video Layer Editor</title>
+<link rel="stylesheet" href="style.css">
 <style>
-body {
-  background: #0d1117;
-  color: #c9d1d9;
-  font-family: Arial, sans-serif;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 2em;
-}
-h1 { color: #58a6ff; margin-bottom: 1em; text-align: center; }
-#controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 1em; margin-bottom: 1em; }
-button, input[type=file], select {
-  background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
-  padding: 0.5em 1em; border-radius: 8px; cursor: pointer;
-}
-video, canvas { width: 90%; max-width: 800px; border-radius: 10px; margin-top: 1em; border: 2px solid #30363d; }
-#status { margin-top: 1em; font-size: 0.9rem; color: #8b949e; }
+  body { background:#0d1117; color:#c9d1d9; font-family:Arial,sans-serif; display:flex; flex-direction:column; align-items:center; padding:1em; }
+  h1 { color:#58a6ff; margin-bottom:0.5em; }
+  video, canvas { width:100%; max-width:720px; border-radius:12px; margin-bottom:0.5em; }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; margin:0.5em 0; }
+  button, select, input[type="file"] { padding:10px; border-radius:8px; border:none; font-weight:700; cursor:pointer; background:#238636; color:#fff; }
+  button:disabled { background:#2f3338; opacity:0.7; cursor:not-allowed; }
+  .progress { width:100%; max-width:720px; height:8px; background:#111; border-radius:6px; overflow:hidden; margin-top:0.5em; }
+  .progress > div { height:100%; width:0%; background:linear-gradient(90deg,#3bd,#58a6ff); transition:width 0.1s linear; }
+  #status { margin-top:0.5em; color:#8b949e; font-size:0.9rem; text-align:center; }
 </style>
 </head>
 <body>
 
-<h1>🎥 AI Background Remover</h1>
+<h1>AI Video Layer Editor</h1>
 
-<div id="controls">
-  <input type="file" id="videoInput" accept="video/*">
-  <select id="modeSelect">
-    <option value="motion">Motion</option>
-    <option value="all">Edges</option>
-    <option value="threshold">Threshold</option>
-  </select>
+<input id="videoInput" type="file" accept="video/*">
+
+<video id="inputVideo" playsinline controls></video>
+<canvas id="outputCanvas"></canvas>
+
+<div class="controls">
   <button id="startBtn">Start Processing</button>
-  <button id="stopBtn">Stop</button>
-  <button id="saveBtn">Download Result</button>
+  <button id="stopBtn" disabled>Stop</button>
+  <button id="saveBtn" disabled>Save Video</button>
 </div>
 
-<video id="outputVideo" controls></video>
-<canvas id="processCanvas" style="display:none;"></canvas>
-<div id="status">Status: Waiting for video...</div>
+<div class="progress"><div id="progressFill"></div></div>
+<div id="status">Ready.</div>
 
+<script src="detector.js"></script>
 <script>
-const videoInput = document.getElementById("videoInput");
-const modeSelect = document.getElementById("modeSelect");
-const startBtn = document.getElementById("startBtn");
-const stopBtn = document.getElementById("stopBtn");
-const saveBtn = document.getElementById("saveBtn");
-const status = document.getElementById("status");
+const videoInput = document.getElementById('videoInput');
+const inputVideo = document.getElementById('inputVideo');
+const outCanvas = document.getElementById('outputCanvas');
+const outCtx = outCanvas.getContext('2d');
 
-const outputVideo = document.getElementById("outputVideo");
-const processCanvas = document.getElementById("processCanvas");
-const ctx = processCanvas.getContext("2d");
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const saveBtn = document.getElementById('saveBtn');
 
-let video = document.createElement("video");
-video.muted = true;
+const progressFill = document.getElementById('progressFill');
+const statusEl = document.getElementById('status');
 
-let worker = new Worker("detector-worker.js");
-let pendingProcess = null;
 let processing = false;
 let recorder = null;
 let recordedBlobs = [];
+let pendingProcess = null;
 
-// --- Video load ---
-videoInput.addEventListener("change", e => {
-  const file = e.target.files[0];
-  if (!file) return;
+function setStatus(s){ statusEl.textContent = s; }
+function setProgress(p){ progressFill.style.width = `${p}%`; }
 
-  video.src = URL.createObjectURL(file);
-  video.load();
-  video.onloadeddata = () => {
-    processCanvas.width = video.videoWidth;
-    processCanvas.height = video.videoHeight;
-    outputVideo.width = video.videoWidth;
-    outputVideo.height = video.videoHeight;
-    status.textContent = `Loaded video: ${file.name} (${video.videoWidth}x${video.videoHeight})`;
+// Load video
+videoInput.addEventListener('change', e=>{
+  const f = e.target.files[0];
+  if(!f) return;
+  inputVideo.src = URL.createObjectURL(f);
+  inputVideo.load();
+  inputVideo.onloadeddata = () => {
+    outCanvas.width = inputVideo.videoWidth;
+    outCanvas.height = inputVideo.videoHeight;
+    setStatus(`Loaded video: ${inputVideo.videoWidth}×${inputVideo.videoHeight}`);
     startBtn.disabled = false;
+    stopBtn.disabled = true;
+    saveBtn.disabled = true;
+    setProgress(0);
   };
 });
 
-// --- Start processing ---
-startBtn.addEventListener("click", async () => {
-  if (!video.src) { alert("Select a video first"); return; }
-
+// Start processing
+startBtn.addEventListener('click', async ()=>{
+  if(!inputVideo.src){ setStatus("Choose a video first."); return; }
   startBtn.disabled = true;
   stopBtn.disabled = false;
   saveBtn.disabled = true;
-  processing = true;
-  recordedBlobs = [];
 
-  // Initialize MediaRecorder for final output
-  const stream = processCanvas.captureStream(30);
-  recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp8" });
-  recorder.ondataavailable = ev => { if(ev.data && ev.data.size) recordedBlobs.push(ev.data); };
+  setStatus("Initializing Detector...");
+  await Detector.init();
+
+  recordedBlobs = [];
+  const stream = outCanvas.captureStream(25);
+  recorder = new MediaRecorder(stream, {mimeType:'video/webm;codecs=vp8'});
+  recorder.ondataavailable = e=>{ if(e.data && e.data.size) recordedBlobs.push(e.data); };
   recorder.start(1000);
 
-  video.currentTime = 0;
-  await video.play().catch(()=>{});
-  status.textContent = "Processing started...";
+  processing = true;
+  inputVideo.currentTime = 0;
+  await inputVideo.play().catch(()=>{});
+  setStatus("Processing started...");
   processLoop();
 });
 
-// --- Stop processing ---
-stopBtn.addEventListener("click", () => {
+// Stop processing
+stopBtn.addEventListener('click', ()=>{
   processing = false;
   startBtn.disabled = false;
   stopBtn.disabled = true;
+  if(recorder && recorder.state === 'recording') recorder.stop();
   saveBtn.disabled = recordedBlobs.length === 0;
-  if(recorder && recorder.state === "recording") recorder.stop();
-  status.textContent = "Processing stopped.";
+  setStatus("Processing stopped.");
 });
 
-// --- Download result ---
-saveBtn.addEventListener("click", () => {
-  if (recordedBlobs.length === 0) return alert("No video recorded.");
-  const blob = new Blob(recordedBlobs, { type:"video/webm" });
+// Save processed video
+saveBtn.addEventListener('click', ()=>{
+  if(recordedBlobs.length===0){ setStatus("Nothing recorded."); return; }
+  const blob = new Blob(recordedBlobs, {type:'video/webm'});
   const url = URL.createObjectURL(blob);
-  outputVideo.src = url;
-  outputVideo.play();
-  const a = document.createElement("a");
+  const a = document.createElement('a');
   a.href = url;
   a.download = `processed_${Date.now()}.webm`;
   a.click();
-  status.textContent = "Video saved!";
+  setStatus("Video saved.");
 });
 
-// --- Frame processing loop ---
-function processLoop() {
-  if (!processing) return;
-  if(video.paused || video.ended){
-    requestAnimationFrame(processLoop);
-    return;
-  }
+// Main processing loop
+let lastTimestamp = 0;
+const targetMs = 40; // ~25fps
+async function processLoop(){
+  if(!processing) return;
 
-  ctx.drawImage(video, 0, 0, processCanvas.width, processCanvas.height);
-  const frame = ctx.getImageData(0, 0, processCanvas.width, processCanvas.height);
+  outCtx.clearRect(0,0,outCanvas.width,outCanvas.height);
+  outCtx.drawImage(inputVideo,0,0,outCanvas.width,outCanvas.height);
 
-  if(!pendingProcess){
-    pendingProcess = new Promise(resolve => {
-      worker.onmessage = e => {
-        if(e.data.type==="mask"){
-          const mask = new ImageData(new Uint8ClampedArray(e.data.maskData), e.data.width, e.data.height);
-          // apply mask to canvas (background removal)
-          ctx.putImageData(mask, 0, 0);
-        }
+  if(performance.now()-lastTimestamp >= targetMs && !pendingProcess){
+    lastTimestamp = performance.now();
+    try {
+      const frame = outCtx.getImageData(0,0,outCanvas.width,outCanvas.height);
+      pendingProcess = Detector.processFrame(frame).then(mask=>{
         pendingProcess = null;
-        resolve();
-      };
-      worker.postMessage({ type:"process", frame, mode: modeSelect.value });
-    });
+        if(mask) Detector.applyMask(outCtx, mask);
+      }).catch(err=>{
+        pendingProcess=null;
+        console.error("Frame processing error:", err);
+      });
+    } catch(err){ console.error("Processing failed:",err); }
   }
 
-  requestAnimationFrame(processLoop);
+  if(inputVideo.duration) setProgress(Math.min(100,(inputVideo.currentTime/inputVideo.duration)*100));
+  if(!inputVideo.paused && !inputVideo.ended) requestAnimationFrame(processLoop);
+  else if(inputVideo.ended){ processing=false; stopBtn.click(); setStatus("Processing completed."); }
 }
+
+window.addEventListener('beforeunload', e=>{
+  if(processing){ e.preventDefault(); e.returnValue=''; }
+});
 </script>
 
 </body>
