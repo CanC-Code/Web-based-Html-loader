@@ -3,5 +3,5 @@ h1 { color:#58a6ff; margin-bottom:1em; }
 .controls { margin-bottom:1em; }
 button, select, input[type=file] { margin:0.2em; padding:0.5em 1em; border-radius:6px; border:none; font-weight:600; cursor:pointer; }
 button:hover, select:hover, input[type=file]:hover { background:#2ea043; color:#fff; }
-canvas { border:2px solid #30363d; border-radius:8px; margin-top:1em; max-width:90%; }
+canvas { border:2px solid #30363d; border-radius:8px; margin-top:1em; max-width:90%; height:auto; }
 #status { margin-top:1em; color:#8b949e; }
