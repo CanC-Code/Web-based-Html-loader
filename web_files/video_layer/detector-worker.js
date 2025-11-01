@@ -16,7 +16,7 @@ async function initSegmentation(width, height) {
 
 function onResults(results) {
   const maskImage = results.segmentationMask;
-  const tmpCanvas = new OffscreenCanvas(maskImage.width, maskImage.height);
+  const tmpCanvas = new OffscreenCanvas(frameWidth, frameHeight);
   const tmpCtx = tmpCanvas.getContext('2d');
   tmpCtx.drawImage(maskImage, 0, 0, frameWidth, frameHeight);
   const imageData = tmpCtx.getImageData(0, 0, frameWidth, frameHeight);
