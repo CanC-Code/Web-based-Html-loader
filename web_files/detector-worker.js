@@ -1,89 +1,83 @@
-// detector-worker.js — AI-powered frame processor with focus refinement
-self.importScripts('https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js');
+// detector-worker.js — AI background removal & processing worker
+self.importScripts("https://docs.opencv.org/4.x/opencv.js");
 
-let seg = null;
 let ready = false;
-
-// Accumulated mask to reinforce consistent foreground
-let accumMask = null;
-let frameCount = 0;
-
-// Refinement parameters
-const swayAlpha = 0.3; // how strongly new frames affect accumulated mask
-const minFrames = 3;   // wait this many frames before stabilization
-
-function initSegmentation(){
-  if(seg) return;
-  seg = new SelfieSegmentation({locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`});
-  seg.setOptions({ modelSelection: 1 });
-  seg.onResults(results => {
-    if(!self.currentFrame) return;
-
-    const width = self.currentFrame.width;
-    const height = self.currentFrame.height;
-
-    // Convert mask to ImageData
-    const offMask = new OffscreenCanvas(width, height);
-    const ctxMask = offMask.getContext('2d');
-    ctxMask.drawImage(results.segmentationMask, 0, 0, width, height);
-    const maskData = ctxMask.getImageData(0,0,width,height);
-
-    // Initialize accumulated mask if first frame
-    if(!accumMask){
-      accumMask = new Float32Array(width*height);
-      for(let i=0;i<accumMask.length;i++){
-        accumMask[i] = maskData.data[i*4]/255; // grayscale alpha
-      }
-    } else {
-      // Refine mask with sway pattern
-      for(let i=0;i<accumMask.length;i++){
-        const newVal = maskData.data[i*4]/255;
-        accumMask[i] = swayAlpha*newVal + (1-swayAlpha)*accumMask[i];
-      }
-    }
-    frameCount++;
-
-    // Apply refined mask to frame
-    const off = new OffscreenCanvas(width, height);
-    const ctx = off.getContext('2d');
-    ctx.drawImage(self.currentFrame,0,0,width,height);
-
-    const imgData = ctx.getImageData(0,0,width,height);
-    const data = imgData.data;
-    for(let i=0;i<accumMask.length;i++){
-      const alpha = frameCount >= minFrames ? accumMask[i] : 1; // ignore sway first few frames
-      // Apply mask alpha
-      data[i*4+0] *= alpha;
-      data[i*4+1] *= alpha;
-      data[i*4+2] *= alpha;
-    }
-    ctx.putImageData(imgData,0,0);
-
-    off.convertToBlob().then(blob=>{
-      createImageBitmap(blob).then(finalBitmap=>{
-        self.postMessage({type:'mask', mask: finalBitmap}, [finalBitmap]);
-      });
-    });
-  });
-
+cv['onRuntimeInitialized'] = () => {
   ready = true;
+  postMessage({ type: "log", msg: "OpenCV worker ready" });
+};
+
+// Keep previous frame for motion detection
+let prevGray = null;
+
+// Simple exclusion mask logic (example: top ceiling fan area)
+const exclusionRegions = [
+  {x:0, y:0, w:1000, h:80} // top region to ignore
+];
+
+function applyExclusions(mask) {
+  exclusionRegions.forEach(r => {
+    const mat = new cv.Mat(mask.rows, mask.cols, cv.CV_8UC1);
+    cv.rectangle(mat, new cv.Point(r.x,r.y), new cv.Point(r.x+r.w,r.y+r.h), new cv.Scalar(0), -1);
+    cv.bitwise_and(mask, mat, mask);
+    mat.delete();
+  });
+  return mask;
 }
 
-self.onmessage = e=>{
-  const data = e.data;
-  if(data.type==='init'){
-    accumMask = null;
-    frameCount = 0;
-    initSegmentation();
-    self.postMessage({type:'log', msg:'Worker ready'});
-  } else if(data.type==='process'){
-    if(!ready) return;
-    const { frame } = data;
+self.onmessage = async e => {
+  const { type, frame, mode } = e.data;
+  if(type !== "process" || !ready) return;
 
-    // Convert frame to ImageBitmap for MediaPipe
-    createImageBitmap(frame).then(bitmap=>{
-      self.currentFrame = bitmap;
-      seg.send({image: bitmap});
-    });
+  try {
+    const src = cv.matFromImageData(frame);
+    const gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    let mask = new cv.Mat();
+
+    if(mode === "backgroundRemove") {
+      // simple motion detection for now
+      if(prevGray) {
+        cv.absdiff(gray, prevGray, mask);
+        cv.threshold(mask, mask, 25, 255, cv.THRESH_BINARY);
+        cv.medianBlur(mask, mask, 5);
+      } else {
+        cv.threshold(gray, mask, 128, 255, cv.THRESH_BINARY);
+      }
+    } else if(mode === "backgroundBlur") {
+      // create mask of foreground by motion
+      if(prevGray) {
+        cv.absdiff(gray, prevGray, mask);
+        cv.threshold(mask, mask, 20, 255, cv.THRESH_BINARY);
+        cv.medianBlur(mask, mask, 5);
+      } else {
+        cv.threshold(gray, mask, 128, 255, cv.THRESH_BINARY);
+      }
+      // apply slight Gaussian blur to entire frame for background effect
+      let blurred = new cv.Mat();
+      cv.GaussianBlur(src, blurred, new cv.Size(15,15), 0);
+      cv.bitwise_and(blurred, blurred, src, cv.bitwise_not(mask));
+      blurred.delete();
+    } else {
+      // default fallback
+      cv.threshold(gray, mask, 128, 255, cv.THRESH_BINARY);
+    }
+
+    if(prevGray) prevGray.delete();
+    prevGray = gray.clone();
+
+    mask = applyExclusions(mask);
+
+    // Return mask as ImageData
+    const outData = new ImageData(new Uint8ClampedArray(mask.data), mask.cols, mask.rows);
+    postMessage({ type:"mask", mask:outData, width:mask.cols, height:mask.rows });
+
+    src.delete();
+    gray.delete();
+    mask.delete();
+  } catch(err){
+    postMessage({ type:"log", msg: "Worker error: " + err });
+    postMessage({ type:"none" });
   }
 };
