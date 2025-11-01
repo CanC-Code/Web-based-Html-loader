@@ -1,36 +1,36 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI Video Editor — Background Removal</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
 <header>
   <h1>AI Video Editor — Background Removal</h1>
-  <p class="lead">Load a video, select a mode, preview edits, then save the final result.</p>
+  <p class="lead">Load video, select mode, preview processed video, then download.</p>
 </header>
 
 <main>
   <section class="mediaBox">
     <div class="mediaInner">
-      <input id="videoInput" type="file" accept="video/*">
-
+      <input type="file" id="videoInput" accept="video/*">
       <video id="inputVideo" playsinline controls></video>
-      <canvas id="outputCanvas" aria-label="Processed video output"></canvas>
+      <canvas id="outputCanvas" aria-label="Processed output"></canvas>
     </div>
   </section>
 
   <section class="controls">
-    <button id="startBtn">Start</button>
-    <button id="stopBtn" disabled>Stop</button>
-    <button id="playBtn" disabled>Play Processed</button>
-    <button id="downloadBtn" disabled>Download</button>
     <select id="modeSelect" class="aux">
-      <option value="remove">Background Removal</option>
+      <option value="remove">Remove Background</option>
       <option value="blur">Background Blur</option>
+      <option value="original">Original</option>
     </select>
+    <button id="playBtn">Play Processed</button>
+    <button id="pauseBtn">Pause</button>
+    <button id="saveBtn">Download</button>
   </section>
 
   <div class="progressWrap">
@@ -42,85 +42,93 @@
 
 <script src="detector.js"></script>
 <script>
-const videoInput = document.getElementById('videoInput');
-const inputVideo = document.getElementById('inputVideo');
-const startBtn = document.getElementById('startBtn');
-const stopBtn = document.getElementById('stopBtn');
-const playBtn = document.getElementById('playBtn');
-const downloadBtn = document.getElementById('downloadBtn');
-const modeSelect = document.getElementById('modeSelect');
-const progressFill = document.getElementById('progressFill');
-const statusEl = document.getElementById('status');
+const inputVideo = document.getElementById("inputVideo");
+const videoInput = document.getElementById("videoInput");
+const outCanvas = document.getElementById("outputCanvas");
+const outCtx = outCanvas.getContext("2d");
+
+const playBtn = document.getElementById("playBtn");
+const pauseBtn = document.getElementById("pauseBtn");
+const saveBtn = document.getElementById("saveBtn");
+const modeSelect = document.getElementById("modeSelect");
+
+const progressFill = document.getElementById("progressFill");
+const statusEl = document.getElementById("status");
 
 let processing = false;
+let recorder = null;
+let recordedBlobs = [];
 
-// Video load
-videoInput.addEventListener('change', e => {
-  const file = e.target.files[0];
-  if(!file) return;
-
-  inputVideo.src = URL.createObjectURL(file);
+// --- Load video ---
+videoInput.addEventListener("change", e => {
+  const f = e.target.files[0];
+  if(!f) return;
+  inputVideo.src = URL.createObjectURL(f);
   inputVideo.load();
   inputVideo.onloadeddata = () => {
-    const canvas = document.getElementById('outputCanvas');
-    canvas.width = inputVideo.videoWidth;
-    canvas.height = inputVideo.videoHeight;
-
-    statusEl.textContent = `Loaded: ${inputVideo.videoWidth}×${inputVideo.videoHeight}`;
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
-    playBtn.disabled = true;
-    downloadBtn.disabled = true;
+    outCanvas.width = inputVideo.videoWidth;
+    outCanvas.height = inputVideo.videoHeight;
+    recordedBlobs = [];
+    setStatus("Video loaded.");
+    startProcessing();
   };
 });
 
-// Start processing
-startBtn.addEventListener('click', async () => {
-  startBtn.disabled = true;
-  stopBtn.disabled = false;
-  playBtn.disabled = true;
-  downloadBtn.disabled = true;
-  const selectedMode = modeSelect.value;
+// --- Status helpers ---
+function setStatus(msg){ statusEl.textContent = msg; }
+function setProgress(p){ progressFill.style.width = `${p}%`; }
+
+// --- Processing loop ---
+async function startProcessing() {
+  if(!DetectorInstance.ready) {
+    setStatus("Waiting for AI detector...");
+    await new Promise(r => {
+      const checkReady = setInterval(()=>{
+        if(DetectorInstance.ready){ clearInterval(checkReady); r(); }
+      },100);
+    });
+  }
 
   processing = true;
-  statusEl.textContent = 'Initializing AI detector...';
+  inputVideo.currentTime = 0;
+  inputVideo.play().catch(()=>{});
 
-  await VideoDetector.startProcessing(selectedMode);
-  statusEl.textContent = 'Processing...';
-});
+  if(recorder) recorder.stop();
+  recordedBlobs = [];
+  const stream = outCanvas.captureStream(25);
+  recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+  recorder.ondataavailable = e => { if(e.data && e.data.size) recordedBlobs.push(e.data); };
+  recorder.start(1000);
 
-// Stop processing
-stopBtn.addEventListener('click', () => {
-  processing = false;
-  VideoDetector.stopProcessing();
-  startBtn.disabled = false;
-  stopBtn.disabled = true;
-  playBtn.disabled = false;
-  downloadBtn.disabled = false;
-  statusEl.textContent = 'Processing stopped. You can play or download.';
-});
+  const processFrameLoop = async () => {
+    if(!processing) return;
+    outCtx.clearRect(0,0,outCanvas.width,outCanvas.height);
+    outCtx.drawImage(inputVideo,0,0,outCanvas.width,outCanvas.height);
 
-// Play processed video
-playBtn.addEventListener('click', () => VideoDetector.playProcessed());
+    const mask = await DetectorInstance.processFrame(inputVideo,outCanvas.width,outCanvas.height,modeSelect.value);
+    if(mask) DetectorInstance.applyMask(outCtx, mask,outCanvas.width,outCanvas.height,modeSelect.value);
 
-// Download processed video
-downloadBtn.addEventListener('click', () => VideoDetector.downloadProcessed());
+    if(inputVideo.duration) setProgress((inputVideo.currentTime/inputVideo.duration)*100);
+    requestAnimationFrame(processFrameLoop);
+  };
 
-// Optional: update progress bar
-inputVideo.addEventListener('timeupdate', () => {
-  if(inputVideo.duration){
-    const pct = Math.min(100, (inputVideo.currentTime / inputVideo.duration) * 100);
-    progressFill.style.width = `${pct}%`;
-  }
-});
+  processFrameLoop();
+}
 
-// Warn before leaving page
-window.addEventListener('beforeunload', e => {
-  if(processing){
-    e.preventDefault();
-    e.returnValue = '';
-  }
-});
+// --- Playback buttons ---
+playBtn.onclick = ()=>{ inputVideo.play(); processing=true; startProcessing(); };
+pauseBtn.onclick = ()=>{ inputVideo.pause(); processing=false; };
+
+// --- Download ---
+saveBtn.onclick = () => {
+  if(recordedBlobs.length===0){ setStatus("Nothing recorded yet."); return; }
+  const blob = new Blob(recordedBlobs,{ type:'video/webm' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `processed_${Date.now()}.webm`;
+  a.click();
+  setStatus("Video downloaded.");
+};
 </script>
 </body>
 </html>
