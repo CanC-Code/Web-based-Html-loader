@@ -1,83 +1,60 @@
-// detector-worker.js — AI background removal & processing worker
+// detector-worker.js — background AI mask processor
 self.importScripts("https://docs.opencv.org/4.x/opencv.js");
 
 let ready = false;
-cv['onRuntimeInitialized'] = () => {
-  ready = true;
-  postMessage({ type: "log", msg: "OpenCV worker ready" });
-};
+cv['onRuntimeInitialized'] = () => { ready = true; postMessage({ type:"log", msg:"OpenCV Worker Ready" }); };
 
-// Keep previous frame for motion detection
 let prevGray = null;
+let feedbackMasks = [];
 
-// Simple exclusion mask logic (example: top ceiling fan area)
-const exclusionRegions = [
-  {x:0, y:0, w:1000, h:80} // top region to ignore
-];
+self.onmessage = e => {
+  const { type, frame, mode, feedback, mask } = e.data;
 
-function applyExclusions(mask) {
-  exclusionRegions.forEach(r => {
-    const mat = new cv.Mat(mask.rows, mask.cols, cv.CV_8UC1);
-    cv.rectangle(mat, new cv.Point(r.x,r.y), new cv.Point(r.x+r.w,r.y+r.h), new cv.Scalar(0), -1);
-    cv.bitwise_and(mask, mat, mask);
-    mat.delete();
-  });
-  return mask;
-}
+  // Handle feedback from UI
+  if(type === "feedback" && mask){
+    feedbackMasks.push({ mask, feedback });
+    if(feedbackMasks.length > 20) feedbackMasks.shift();
+    return;
+  }
 
-self.onmessage = async e => {
-  const { type, frame, mode } = e.data;
   if(type !== "process" || !ready) return;
 
   try {
     const src = cv.matFromImageData(frame);
     const gray = new cv.Mat();
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    const maskMat = new cv.Mat();
 
-    let mask = new cv.Mat();
-
-    if(mode === "backgroundRemove") {
-      // simple motion detection for now
-      if(prevGray) {
-        cv.absdiff(gray, prevGray, mask);
-        cv.threshold(mask, mask, 25, 255, cv.THRESH_BINARY);
-        cv.medianBlur(mask, mask, 5);
-      } else {
-        cv.threshold(gray, mask, 128, 255, cv.THRESH_BINARY);
-      }
-    } else if(mode === "backgroundBlur") {
-      // create mask of foreground by motion
-      if(prevGray) {
-        cv.absdiff(gray, prevGray, mask);
-        cv.threshold(mask, mask, 20, 255, cv.THRESH_BINARY);
-        cv.medianBlur(mask, mask, 5);
-      } else {
-        cv.threshold(gray, mask, 128, 255, cv.THRESH_BINARY);
-      }
-      // apply slight Gaussian blur to entire frame for background effect
-      let blurred = new cv.Mat();
-      cv.GaussianBlur(src, blurred, new cv.Size(15,15), 0);
-      cv.bitwise_and(blurred, blurred, src, cv.bitwise_not(mask));
-      blurred.delete();
+    if(mode === "motion" && prevGray){
+      cv.absdiff(gray, prevGray, maskMat);
+      cv.threshold(maskMat, maskMat, 25, 255, cv.THRESH_BINARY);
+      cv.medianBlur(maskMat, maskMat, 5);
+    } else if(mode === "all"){
+      cv.Canny(gray, maskMat, 80, 160);
     } else {
-      // default fallback
-      cv.threshold(gray, mask, 128, 255, cv.THRESH_BINARY);
+      cv.threshold(gray, maskMat, 128, 255, cv.THRESH_BINARY);
     }
 
     if(prevGray) prevGray.delete();
     prevGray = gray.clone();
+    src.delete(); gray.delete();
 
-    mask = applyExclusions(mask);
+    // Apply feedback exclusions
+    if(feedbackMasks.length > 0){
+      feedbackMasks.forEach(fb => {
+        if(fb.feedback === "dislike"){
+          maskMat.data.set(maskMat.data.map((v,i)=> fb.mask.data[i]>0 ? 0 : v));
+        }
+        if(fb.feedback === "like"){
+          maskMat.data.set(maskMat.data.map((v,i)=> fb.mask.data[i]>0 ? 255 : v));
+        }
+      });
+    }
 
-    // Return mask as ImageData
-    const outData = new ImageData(new Uint8ClampedArray(mask.data), mask.cols, mask.rows);
-    postMessage({ type:"mask", mask:outData, width:mask.cols, height:mask.rows });
+    postMessage({ type:"mask", maskData: maskMat.data.slice(0), width: maskMat.cols, height: maskMat.rows });
 
-    src.delete();
-    gray.delete();
-    mask.delete();
+    maskMat.delete();
   } catch(err){
-    postMessage({ type:"log", msg: "Worker error: " + err });
-    postMessage({ type:"none" });
+    postMessage({ type:"log", msg:"Worker error: " + err });
   }
 };
