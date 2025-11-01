@@ -6,23 +6,24 @@ self.importScripts(
 
 let ready = false;
 let mpSeg = null;
-let prevGray = null;
 
 cv['onRuntimeInitialized'] = () => {
   ready = true;
   postMessage({ type: "log", msg: "OpenCV ready in worker" });
 };
 
-// Initialize MediaPipe SelfieSegmentation
 function initSegmentation() {
   return new Promise(resolve => {
+    if (mpSeg) return resolve();
     mpSeg = new SelfieSegmentation({
       locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`
     });
     mpSeg.setOptions({ modelSelection: 1 });
     mpSeg.onResults(results => {
-      // send mask back
-      self.postMessage({ type: "mask", maskData: results.segmentationMask });
+      // send mask back as ImageBitmap for blur/human modes
+      createImageBitmap(results.segmentationMask).then(maskBitmap => {
+        self.postMessage({ type: "mask", maskData: maskBitmap }, [maskBitmap]);
+      });
     });
     resolve();
   });
@@ -33,43 +34,55 @@ self.onmessage = async e => {
   if (type !== "process" || !ready) return;
 
   try {
-    // Convert frame to OpenCV mat
     const src = cv.matFromImageData(frame);
-    let outMat = new cv.Mat();
-    
+
     if (mode === "motion") {
       const gray = new cv.Mat();
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      if (prevGray) {
-        cv.absdiff(gray, prevGray, outMat);
-        cv.threshold(outMat, outMat, 25, 255, cv.THRESH_BINARY);
-        cv.medianBlur(outMat, outMat, 5);
+      if (self.prevGray) {
+        const diff = new cv.Mat();
+        cv.absdiff(gray, self.prevGray, diff);
+        cv.threshold(diff, diff, 25, 255, cv.THRESH_BINARY);
+        cv.medianBlur(diff, diff, 5);
+        postMessage({
+          type: "mask",
+          maskData: diff.data.slice(0),
+          width: diff.cols,
+          height: diff.rows
+        });
+        diff.delete();
       }
-      if (prevGray) prevGray.delete();
-      prevGray = gray.clone();
+      if (self.prevGray) self.prevGray.delete();
+      self.prevGray = gray.clone();
       gray.delete();
-    } else if (mode === "all") {
+      src.delete();
+      return;
+    }
+
+    if (mode === "all") {
       const gray = new cv.Mat();
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      cv.Canny(gray, outMat, 80, 160);
-      gray.delete();
-    } else if (mode === "human" || mode === "remove" || mode === "blur") {
-      if (!mpSeg) await initSegmentation();
-      // Send frame to MediaPipe segmentation
+      const edges = new cv.Mat();
+      cv.Canny(gray, edges, 80, 160);
+      postMessage({
+        type: "mask",
+        maskData: edges.data.slice(0),
+        width: edges.cols,
+        height: edges.rows
+      });
+      gray.delete(); edges.delete(); src.delete();
+      return;
+    }
+
+    if (mode === "human" || mode === "remove" || mode === "blur") {
+      await initSegmentation();
       const imgBitmap = await createImageBitmap(frame);
       mpSeg.send({ image: imgBitmap });
       src.delete();
-      return; // mask will be returned async via mpSeg.onResults
+      return; // MediaPipe will send mask asynchronously
     }
 
-    // Return mask for OpenCV modes
-    postMessage({
-      type: "mask",
-      maskData: outMat.data.slice(0),
-      width: outMat.cols,
-      height: outMat.rows
-    });
-    src.delete(); outMat.delete();
+    src.delete();
   } catch (err) {
     postMessage({ type: "log", msg: "Worker error: " + err });
   }
