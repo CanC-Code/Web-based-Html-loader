@@ -1,67 +1,147 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
-<title>AI Video Layer — Mobile-friendly</title>
-<link rel="stylesheet" href="style.css" />
-<!-- MediaPipe and OpenCV are loaded inside workers or as needed; main page keeps lean -->
-<script src="detector.js" defer></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Video Segmentation</title>
+<style>
+  body {
+    margin:0; padding:1em;
+    font-family:Arial, sans-serif;
+    background:#0d1117; color:#c9d1d9;
+    display:flex; flex-direction:column; align-items:center;
+    min-height:100vh;
+  }
+  h1 { color:#58a6ff; font-size:1.3rem; margin-bottom:1em; text-align:center; }
+  video, canvas {
+    width:100%; max-width:700px;
+    border-radius:12px;
+    background:#000;
+    margin-bottom:1em;
+  }
+  #controls {
+    display:flex; flex-wrap:wrap; justify-content:center;
+    gap:0.5em; margin-top:0.5em;
+  }
+  button {
+    background:#238636; color:white; border:none;
+    padding:0.6em 1em; border-radius:8px; font-weight:600;
+    cursor:pointer;
+  }
+  button:hover { background:#2ea043; }
+  button:disabled { opacity:0.5; cursor:not-allowed; }
+  #status { color:#8b949e; margin-top:0.5em; font-size:0.9rem; text-align:center; }
+</style>
 </head>
 <body>
-<header class="topbar">
-  <h1>AI Video Layer</h1>
-  <p class="subtitle">Segmentation · Blur · Object exclusion — in-browser, worker-based</p>
-</header>
 
-<main class="container">
-  <section class="controls">
-    <label class="control-row">
-      <span class="label">Select video</span>
-      <input id="videoInput" type="file" accept="video/*" />
-    </label>
+<h1>AI Video Background Remover</h1>
 
-    <label class="control-row">
-      <span class="label">Effect</span>
-      <select id="effectSelect">
-        <option value="none">None</option>
-        <option value="bgRemove">Background removal</option>
-        <option value="bgBlur">Background blur</option>
-        <option value="objectExclude">Object exclusion</option>
-      </select>
-    </label>
+<input type="file" id="videoInput" accept="video/*">
+<video id="video" playsinline muted></video>
+<canvas id="canvas"></canvas>
 
-    <label class="control-row">
-      <span class="label">Quality</span>
-      <input id="qualityRange" type="range" min="0.25" max="1" step="0.25" value="1" />
-      <small id="qualityLabel">Full</small>
-    </label>
+<div id="controls">
+  <button id="startBtn">▶ Start Segmentation</button>
+  <button id="stopBtn" disabled>⏹ Stop</button>
+  <button id="downloadBtn" disabled>💾 Download Result</button>
+</div>
 
-    <div class="button-row">
-      <button id="startBtn" class="btn-primary">Start</button>
-      <button id="pauseBtn" class="btn-secondary" disabled>Pause</button>
-      <button id="stopBtn" class="btn-danger" disabled>Stop</button>
-      <button id="downloadBtn" class="btn-download" disabled>Download</button>
-    </div>
-
-    <div class="info-row">
-      <div id="status">Idle.</div>
-      <div id="fps" aria-hidden="true"></div>
-    </div>
-  </section>
-
-  <section class="canvas-wrap">
-    <!-- Canvas will show processed video (and is recorded) -->
-    <canvas id="outputCanvas" playsinline></canvas>
-  </section>
-</main>
-
-<footer class="footer">
-  <small>Designed for local use. Works offline once files are present. Uses Web Workers and MediaRecorder.</small>
-</footer>
+<div id="status">Waiting for video...</div>
 
 <script>
-/* Minimal boot strap: all heavy logic lives in detector.js as VideoProcessor class */
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const input = document.getElementById('videoInput');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const status = document.getElementById('status');
+
+let worker;
+let recordingChunks = [];
+let mediaRecorder;
+let running = false;
+
+input.addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  video.src = URL.createObjectURL(file);
+  video.load();
+  video.onloadeddata = () => {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    startBtn.disabled = false;
+    status.textContent = "Video loaded. Ready to start segmentation.";
+  };
+});
+
+startBtn.onclick = () => {
+  if (!video.src) return;
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  status.textContent = "Starting segmentation...";
+  startSegmentation();
+};
+
+stopBtn.onclick = stopSegmentation;
+
+downloadBtn.onclick = () => {
+  const blob = new Blob(recordingChunks, { type: 'video/webm' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'segmented_output.webm';
+  a.click();
+};
+
+function startSegmentation() {
+  if (running) return;
+  running = true;
+
+  worker = new Worker('processor-worker.js');
+  worker.postMessage({ type: 'init', width: canvas.width, height: canvas.height });
+
+  const stream = canvas.captureStream();
+  mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+  recordingChunks = [];
+  mediaRecorder.ondataavailable = e => recordingChunks.push(e.data);
+  mediaRecorder.start();
+
+  video.play().catch(()=>{});
+  status.textContent = "Processing video...";
+
+  function frameLoop() {
+    if (!running || video.paused || video.ended) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    worker.postMessage({ type: 'process', frame }, [frame.data.buffer]);
+    video.requestVideoFrameCallback(frameLoop);
+  }
+  video.requestVideoFrameCallback(frameLoop);
+
+  worker.onmessage = e => {
+    if (e.data.type === 'render') {
+      const img = new ImageData(e.data.data, e.data.width, e.data.height);
+      ctx.putImageData(img, 0, 0);
+    } else if (e.data.type === 'done') {
+      stopSegmentation();
+    }
+  };
+}
+
+function stopSegmentation() {
+  running = false;
+  stopBtn.disabled = true;
+  startBtn.disabled = false;
+  worker?.terminate();
+  video.pause();
+  mediaRecorder?.stop();
+  downloadBtn.disabled = false;
+  status.textContent = "Processing stopped. Ready to download.";
+}
 </script>
+
 </body>
 </html>
