@@ -1,40 +1,36 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Video Layer — AI Editor</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Video Editor — Background Removal</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header>
-  <h1>Video Layer — AI Editor</h1>
-  <p class="lead">Load a video, choose an edit, watch live processing, replay, then download the result.</p>
+  <h1>AI Video Editor — Background Removal</h1>
+  <p class="lead">Load a video, select a mode, preview edits, then save the final result.</p>
 </header>
 
 <main>
   <section class="mediaBox">
     <div class="mediaInner">
-      <label style="width:100%; text-align:center;">
-        <input id="videoInput" type="file" accept="video/*" style="width:100%; padding:8px; border-radius:8px;" />
-      </label>
+      <input id="videoInput" type="file" accept="video/*">
 
       <video id="inputVideo" playsinline controls></video>
-
-      <canvas id="outputCanvas" aria-label="Processed output"></canvas>
+      <canvas id="outputCanvas" aria-label="Processed video output"></canvas>
     </div>
   </section>
 
   <section class="controls">
-    <select id="modeSelect" class="aux" title="Processing mode">
-      <option value="remove">Background removal</option>
-      <option value="blur">Background blur</option>
+    <button id="startBtn">Start</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <button id="playBtn" disabled>Play Processed</button>
+    <button id="downloadBtn" disabled>Download</button>
+    <select id="modeSelect" class="aux">
+      <option value="remove">Background Removal</option>
+      <option value="blur">Background Blur</option>
     </select>
-
-    <button id="startBtn">Start Processing</button>
-    <button id="stopBtn" disabled>Stop Processing</button>
-    <button id="playBtn" disabled>Replay Processed</button>
-    <button id="downloadBtn" disabled>Download Video</button>
   </section>
 
   <div class="progressWrap">
@@ -48,7 +44,6 @@
 <script>
 const videoInput = document.getElementById('videoInput');
 const inputVideo = document.getElementById('inputVideo');
-
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const playBtn = document.getElementById('playBtn');
@@ -57,20 +52,21 @@ const modeSelect = document.getElementById('modeSelect');
 const progressFill = document.getElementById('progressFill');
 const statusEl = document.getElementById('status');
 
-function setStatus(msg){ statusEl.textContent = msg; }
-function setProgress(p){ progressFill.style.width = `${Math.max(0,Math.min(100,p))}%`; }
+let processing = false;
 
-// Load video
-videoInput.addEventListener('change', e=>{
-  const f = e.target.files[0];
-  if(!f) return;
-  inputVideo.src = URL.createObjectURL(f);
+// Video load
+videoInput.addEventListener('change', e => {
+  const file = e.target.files[0];
+  if(!file) return;
+
+  inputVideo.src = URL.createObjectURL(file);
   inputVideo.load();
   inputVideo.onloadeddata = () => {
-    document.getElementById('outputCanvas').width = inputVideo.videoWidth;
-    document.getElementById('outputCanvas').height = inputVideo.videoHeight;
-    setStatus(`Loaded: ${inputVideo.videoWidth}×${inputVideo.videoHeight}`);
-    setProgress(0);
+    const canvas = document.getElementById('outputCanvas');
+    canvas.width = inputVideo.videoWidth;
+    canvas.height = inputVideo.videoHeight;
+
+    statusEl.textContent = `Loaded: ${inputVideo.videoWidth}×${inputVideo.videoHeight}`;
     startBtn.disabled = false;
     stopBtn.disabled = true;
     playBtn.disabled = true;
@@ -79,49 +75,50 @@ videoInput.addEventListener('change', e=>{
 });
 
 // Start processing
-startBtn.addEventListener('click', async ()=>{
-  if(!inputVideo.src){ setStatus('Please select a video first'); return; }
-
+startBtn.addEventListener('click', async () => {
   startBtn.disabled = true;
   stopBtn.disabled = false;
   playBtn.disabled = true;
   downloadBtn.disabled = true;
-  modeSelect.disabled = true;
+  const selectedMode = modeSelect.value;
 
-  setStatus('Initializing detector...');
-  await VideoDetector.startProcessing();
+  processing = true;
+  statusEl.textContent = 'Initializing AI detector...';
 
-  setStatus('Processing started...');
+  await VideoDetector.startProcessing(selectedMode);
+  statusEl.textContent = 'Processing...';
 });
 
 // Stop processing
-stopBtn.addEventListener('click', ()=>{
+stopBtn.addEventListener('click', () => {
+  processing = false;
   VideoDetector.stopProcessing();
   startBtn.disabled = false;
   stopBtn.disabled = true;
   playBtn.disabled = false;
-  downloadBtn.disabled = true;
-  modeSelect.disabled = false;
-  setStatus('Processing stopped.');
+  downloadBtn.disabled = false;
+  statusEl.textContent = 'Processing stopped. You can play or download.';
 });
 
-// Replay processed video
-playBtn.addEventListener('click', ()=>{
-  VideoDetector.playProcessed();
-  downloadBtn.disabled = false;
-  setStatus('Playing processed video.');
-});
+// Play processed video
+playBtn.addEventListener('click', () => VideoDetector.playProcessed());
 
 // Download processed video
-downloadBtn.addEventListener('click', ()=>{
-  VideoDetector.downloadProcessed();
-  setStatus('Processed video saved.');
+downloadBtn.addEventListener('click', () => VideoDetector.downloadProcessed());
+
+// Optional: update progress bar
+inputVideo.addEventListener('timeupdate', () => {
+  if(inputVideo.duration){
+    const pct = Math.min(100, (inputVideo.currentTime / inputVideo.duration) * 100);
+    progressFill.style.width = `${pct}%`;
+  }
 });
 
-// Update progress bar based on original video
-inputVideo.addEventListener('timeupdate', ()=>{
-  if(inputVideo.duration && inputVideo.duration>0){
-    setProgress((inputVideo.currentTime/inputVideo.duration)*100);
+// Warn before leaving page
+window.addEventListener('beforeunload', e => {
+  if(processing){
+    e.preventDefault();
+    e.returnValue = '';
   }
 });
 </script>
