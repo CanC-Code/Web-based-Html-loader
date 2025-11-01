@@ -1,214 +1,248 @@
 // processor-worker.js
-// Receives per-frame ImageBitmap + alpha (Uint8Array) from main thread.
-// Maintains accumMask (Float32Array) to refine foreground across frames.
-// Implements simple object exclusion heuristic (periodic/high-variance areas like fans).
-// Applies effects and returns processed ImageBitmap to main thread.
+// Worker handles accumulation, object-exclusion heuristics (fan detection), effects, feedback.
+// Receives messages from main thread:
+//  - { type:'frame', bitmap:ImageBitmap, alpha: ArrayBuffer|null, w, h, effect, replaceColor, mode, progress }
+//  - { type:'finalize' }
+//  - { type:'feedback', kind:'like'|'dislike' }
+// Sends messages to main:
+//  - { type:'processed', bitmap:ImageBitmap, progress: number, final?:true }
+//  - { type:'log', msg: string }
 
-// Worker globals
-let accumMask = null;
 let maskW = 0, maskH = 0;
-let history = []; // circular history of alpha arrays (Uint8Array)
-const HISTORY_MAX = 16;
-let swayAlpha = 0.25; // how quickly new masks update accum
-let excludeMask = null; // Uint8Array 0/1 to mark excluded pixels
-let processingCount = 0;
-let lastFrameTime = 0;
+let accum = null; // Float32Array
+let history = []; // recent alpha frames (Uint8Array)
+const HISTORY_MAX = 18;
+let excludeMask = null; // Uint8Array 0/1
+let feedbackQueue = []; // store feedback events
+let processing = false;
+let swayAlpha = 0.25; // how strongly new frame affects accum
+let feedbackInfluence = 0.85;
 
+function log(msg){ postMessage({ type:'log', msg }); }
+
+// init masks for a run
 function initMasks(w,h){
   maskW = w; maskH = h;
-  accumMask = new Float32Array(w*h).fill(0);
-  excludeMask = new Uint8Array(w*h).fill(0);
+  const n = w*h;
+  accum = new Float32Array(n);
+  excludeMask = new Uint8Array(n);
   history = [];
+  for(let i=0;i<n;i++){ accum[i]=0; excludeMask[i]=0; }
 }
 
-// compute variance across history and build exclusion map for periodic/high-variance regions
-function computeExclusionFromHistory(){
-  if(history.length < 6) return; // need enough frames
+// utility: compute exclude mask from history (variance heuristic)
+function updateExclusion(){
+  if(history.length < 6) return;
   const n = maskW*maskH;
-  const mean = new Float32Array(n).fill(0);
-  const sq = new Float32Array(n).fill(0);
-  for(let k=0;k<history.length;k++){
-    const arr = history[k];
+  const L = history.length;
+  const mean = new Float32Array(n);
+  const sq = new Float32Array(n);
+  for(let k=0;k<L;k++){
+    const a = history[k];
     for(let i=0;i<n;i++){
-      const v = arr[i] / 255;
+      const v = a[i]/255;
       mean[i] += v;
       sq[i] += v*v;
     }
   }
-  const L = history.length;
   for(let i=0;i<n;i++){
     mean[i] /= L;
-    sq[i] = (sq[i]/L) - (mean[i]*mean[i]); // variance
-  }
-  // produce exclusion mask where variance is high and mean is moderate (0.2..0.8) -> indicator of oscillatory moving object
-  for(let i=0;i<n;i++){
-    const v = sq[i];
-    const m = mean[i];
-    // tune thresholds by experimentation
-    if(v > 0.02 && m > 0.05 && m < 0.9){
-      excludeMask[i] = 1;
-    } else {
-      excludeMask[i] = 0;
-    }
+    const variance = (sq[i]/L) - (mean[i]*mean[i]);
+    // high variance + moderate mean -> oscillating object
+    excludeMask[i] = (variance > 0.02 && mean[i] > 0.05 && mean[i] < 0.95) ? 1 : 0;
   }
 }
 
-// apply feedback alpha (Uint8Array) to accumMask; kind = 'like' or 'dislike'
-function applyFeedback(alphaArr, kind){
+// apply feedback: reinforce or suppress areas
+function applyFeedbackAlpha(alphaArr, kind){
   const n = maskW*maskH;
   if(alphaArr.length !== n) return;
-  const influence = 0.85;
   if(kind === 'like'){
     for(let i=0;i<n;i++){
-      const a = alphaArr[i] / 255;
-      if(a > 0.2) accumMask[i] = Math.min(1, accumMask[i] * (1 - influence) + influence * 1.0);
+      if(alphaArr[i] > 64){
+        accum[i] = Math.min(1, accum[i] * (1 - feedbackInfluence) + 1*feedbackInfluence);
+      }
     }
   } else if(kind === 'dislike'){
     for(let i=0;i<n;i++){
-      const a = alphaArr[i] / 255;
-      if(a > 0.2) accumMask[i] = Math.max(0, accumMask[i] * (1 - influence));
+      if(alphaArr[i] > 64){
+        accum[i] = Math.max(0, accum[i] * (1 - feedbackInfluence));
+      }
     }
   }
 }
 
-async function applyEffectsAndReturn(frameBitmap, effect, replaceColor){
-  // frameBitmap is ImageBitmap sized maskW x maskH (or similar)
-  // We'll use OffscreenCanvas sized exactly maskW x maskH to process pixel data
-  const off = new OffscreenCanvas(maskW, maskH);
-  const octx = off.getContext('2d');
-  octx.drawImage(frameBitmap, 0, 0, maskW, maskH);
+// effect application: uses OffscreenCanvas to produce final ImageBitmap
+async function applyEffectAndReturn(frameBitmap, effect, replaceColorHex){
+  // draw frame to offscreen canvas sized maskW x maskH
+  const src = new OffscreenCanvas(maskW, maskH);
+  const sctx = src.getContext('2d');
+  sctx.drawImage(frameBitmap, 0, 0, maskW, maskH);
 
-  // Build mask ImageData from accumMask and exclusion
-  const n = maskW*maskH;
+  // create mask image from accum
+  const n = maskW * maskH;
   const maskImg = new ImageData(maskW, maskH);
   for(let i=0;i<n;i++){
-    const a = accumMask[i] * (excludeMask[i] ? 0.15 : 1.0); // suppressed if excluded
-    const alpha = Math.max(0, Math.min(1, a));
-    const offi = i*4;
-    maskImg.data[offi] = 255;
-    maskImg.data[offi+1] = 255;
-    maskImg.data[offi+2] = 255;
-    maskImg.data[offi+3] = Math.round(alpha * 255);
+    const alpha = Math.max(0, Math.min(1, accum[i] * (excludeMask[i] ? 0.6 : 1.0)));
+    const off = i*4;
+    maskImg.data[off] = 255;
+    maskImg.data[off+1] = 255;
+    maskImg.data[off+2] = 255;
+    maskImg.data[off+3] = Math.round(alpha*255);
   }
-
-  // create mask canvas
   const maskCanvas = new OffscreenCanvas(maskW, maskH);
   const mctx = maskCanvas.getContext('2d');
   mctx.putImageData(maskImg, 0, 0);
 
-  // Now composite according to effect
+  // out canvas
   const out = new OffscreenCanvas(maskW, maskH);
-  const outCtx = out.getContext('2d');
+  const octx = out.getContext('2d');
 
   if(effect === 'blur'){
-    // draw blurred background
-    // cheap blur: scale down and scale up
+    // cheap blur: draw scaled down and back up
     const tmp = new OffscreenCanvas(Math.max(2, Math.round(maskW/12)), Math.max(2, Math.round(maskH/12)));
     const tctx = tmp.getContext('2d');
-    tctx.drawImage(off, 0, 0, tmp.width, tmp.height);
-    outCtx.save();
-    outCtx.filter = 'blur(10px)';
-    outCtx.drawImage(tmp, 0, 0, maskW, maskH);
-    outCtx.restore();
-    // draw foreground masked
-    const srcTmp = new OffscreenCanvas(maskW, maskH);
-    const sctx = srcTmp.getContext('2d');
-    sctx.drawImage(off, 0, 0, maskW, maskH);
-    sctx.globalCompositeOperation = 'destination-in';
-    sctx.drawImage(maskCanvas, 0, 0);
-    outCtx.drawImage(srcTmp, 0, 0);
+    tctx.drawImage(src, 0, 0, tmp.width, tmp.height);
+    octx.save();
+    octx.filter = 'blur(10px)';
+    octx.drawImage(tmp, 0, 0, maskW, maskH);
+    octx.restore();
+    // draw foreground using mask
+    const fg = new OffscreenCanvas(maskW, maskH);
+    const fctx = fg.getContext('2d');
+    fctx.drawImage(src, 0, 0, maskW, maskH);
+    fctx.globalCompositeOperation = 'destination-in';
+    fctx.drawImage(maskCanvas, 0, 0);
+    octx.drawImage(fg, 0, 0);
   } else if(effect === 'replaceColor'){
-    // draw background color
-    outCtx.fillStyle = replaceColor || '#0d1117';
-    outCtx.fillRect(0,0,maskW,maskH);
-    // draw foreground
-    const srcTmp = new OffscreenCanvas(maskW, maskH);
-    const sctx = srcTmp.getContext('2d');
-    sctx.drawImage(off, 0, 0, maskW, maskH);
-    sctx.globalCompositeOperation = 'destination-in';
-    sctx.drawImage(maskCanvas, 0, 0);
-    outCtx.drawImage(srcTmp, 0, 0);
+    octx.fillStyle = replaceColorHex || '#0d1117';
+    octx.fillRect(0,0,maskW,maskH);
+    const fg = new OffscreenCanvas(maskW, maskH);
+    const fctx = fg.getContext('2d');
+    fctx.drawImage(src, 0, 0, maskW, maskH);
+    fctx.globalCompositeOperation = 'destination-in';
+    fctx.drawImage(maskCanvas, 0, 0);
+    octx.drawImage(fg, 0, 0);
   } else if(effect === 'desaturate'){
-    // draw desaturated background
-    outCtx.save();
-    outCtx.filter = 'grayscale(1) saturate(0.6)';
-    outCtx.drawImage(off, 0, 0, maskW, maskH);
-    outCtx.restore();
-    // draw foreground
-    const srcTmp = new OffscreenCanvas(maskW, maskH);
-    const sctx = srcTmp.getContext('2d');
-    sctx.drawImage(off, 0, 0, maskW, maskH);
-    sctx.globalCompositeOperation = 'destination-in';
-    sctx.drawImage(maskCanvas, 0, 0);
-    outCtx.drawImage(srcTmp, 0, 0);
+    octx.save();
+    octx.filter = 'grayscale(1) saturate(0.6)';
+    octx.drawImage(src, 0, 0, maskW, maskH);
+    octx.restore();
+    const fg = new OffscreenCanvas(maskW, maskH);
+    const fctx = fg.getContext('2d');
+    fctx.drawImage(src, 0, 0, maskW, maskH);
+    fctx.globalCompositeOperation = 'destination-in';
+    fctx.drawImage(maskCanvas, 0, 0);
+    octx.drawImage(fg, 0, 0);
+  } else if(effect === 'isolateColor'){
+    // try to boost foreground saturation and desaturate background
+    // draw desaturated background first
+    octx.save();
+    octx.filter = 'grayscale(1) contrast(0.9)';
+    octx.drawImage(src, 0, 0, maskW, maskH);
+    octx.restore();
+    // draw foreground with increased saturation
+    const fg = new OffscreenCanvas(maskW, maskH);
+    const fctx = fg.getContext('2d');
+    fctx.filter = 'saturate(1.35) contrast(1.05)';
+    fctx.drawImage(src, 0, 0, maskW, maskH);
+    fctx.globalCompositeOperation = 'destination-in';
+    fctx.drawImage(maskCanvas, 0, 0);
+    octx.drawImage(fg, 0, 0);
   } else {
-    // default remove: transparent background
-    const srcTmp = new OffscreenCanvas(maskW, maskH);
-    const sctx = srcTmp.getContext('2d');
-    sctx.drawImage(off, 0, 0, maskW, maskH);
-    sctx.globalCompositeOperation = 'destination-in';
-    sctx.drawImage(maskCanvas, 0, 0);
-    outCtx.clearRect(0,0,maskW,maskH);
-    outCtx.drawImage(srcTmp, 0, 0);
+    // default: remove background (transparent)
+    const fg = new OffscreenCanvas(maskW, maskH);
+    const fctx = fg.getContext('2d');
+    fctx.drawImage(src, 0, 0, maskW, maskH);
+    fctx.globalCompositeOperation = 'destination-in';
+    fctx.drawImage(maskCanvas, 0, 0);
+    octx.clearRect(0,0,maskW,maskH);
+    octx.drawImage(fg, 0, 0);
   }
 
-  // convert to ImageBitmap and return
-  const resultBitmap = await out.transferToImageBitmap();
-  return resultBitmap;
+  const bmp = await out.transferToImageBitmap();
+  return bmp;
 }
 
-// handle incoming messages
 onmessage = async (e) => {
   const data = e.data;
-  if(data.type === 'processFrame'){
-    // receive frameBitmap and alpha ArrayBuffer
-    const { frameBitmap, alpha, w, h, effect, replaceColor, progress } = data;
-    // if masks not init, init
-    if(!accumMask || maskW !== w || maskH !== h){
-      initMasks(w,h);
-    }
-    // reconstruct alpha Uint8Array (ArrayBuffer could have been transferred)
-    const alphaArr = new Uint8Array(alpha);
-    // push to history
-    if(history.length >= HISTORY_MAX) history.shift();
-    history.push(alphaArr.slice(0)); // copy
-    // update exclusion heuristics periodically
-    if(history.length >= Math.min(HISTORY_MAX, 8)){
-      computeExclusionFromHistory();
-    }
-    // integrate alpha into accumMask with swayAlpha
-    const n = w*h;
-    for(let i=0;i<n;i++){
-      const cur = alphaArr[i] / 255;
-      accumMask[i] = accumMask[i] * (1 - swayAlpha) + cur * swayAlpha;
-      // if excluded reduce contribution gradually
-      if(excludeMask[i]) accumMask[i] *= 0.92;
-    }
-    // apply exclusion: zero out accum where excludeMask strongly present
-    for(let i=0;i<n;i++){
-      if(excludeMask[i]) accumMask[i] = accumMask[i] * 0.7; // suppress
-    }
+  if(data.type === 'frame'){
+    try{
+      const { bitmap, alpha, w, h, effect, replaceColor, mode, progress } = data;
+      // initialize
+      if(!accum || maskW !== w || maskH !== h) initMasks(w,h);
 
-    // apply effects and return processed bitmap
-    const processedBitmap = await applyEffectsAndReturn(frameBitmap, effect, replaceColor);
-    postMessage({ type: 'processedBitmap', bitmap: processedBitmap, progress: progress || 0 }, [processedBitmap]);
+      // alpha may be an ArrayBuffer or null
+      let alphaArr = null;
+      if(alpha){
+        alphaArr = new Uint8Array(alpha);
+        // store copy in history for exclusion heuristics
+        if(history.length >= HISTORY_MAX) history.shift();
+        history.push(alphaArr.slice(0));
+      } else {
+        // if alpha is null (motion mode), attempt to use previous history to compute motion; simple fallback: use last two history frames difference
+        if(history.length >= 2){
+          const a1 = history[history.length-1];
+          const a0 = history[history.length-2];
+          alphaArr = new Uint8Array(maskW*maskH);
+          for(let i=0;i<maskW*maskH;i++){
+            alphaArr[i] = Math.abs(a1[i] - a0[i]);
+          }
+          history.push(alphaArr.slice(0));
+          if(history.length > HISTORY_MAX) history.shift();
+        } else {
+          // no data: set alphaArr to zeros
+          alphaArr = new Uint8Array(maskW*maskH);
+          history.push(alphaArr.slice(0));
+        }
+      }
 
-    // cleanup hint
-    frameBitmap.close();
-    processingCount++;
+      // update exclusion heuristics occasionally
+      if(history.length >= 6){
+        updateExclusion();
+      }
+
+      // integrate alpha into accum using swayAlpha
+      const n = maskW*maskH;
+      for(let i=0;i<n;i++){
+        const c = alphaArr[i] / 255;
+        accum[i] = accum[i] * (1 - swayAlpha) + c * swayAlpha;
+        // if excluded slightly reduce influence
+        if(excludeMask[i]) accum[i] *= 0.95;
+      }
+
+      // process feedback queued (none in this simple flow; feedback messages handled separately)
+      // apply effect
+      const bmp = await applyEffectAndReturn(bitmap, effect, replaceColor);
+      postMessage({ type:'processed', bitmap: bmp, progress: progress || 0 }, [bmp]);
+      // bitmap transferred will be closed by main thread as needed
+    } catch(err){
+      postMessage({ type:'log', msg: 'frame processing error: ' + err });
+      console.error(err);
+    }
   } else if(data.type === 'finalize'){
-    // signal finalization to main: we post a final processedBitmap with final flag by sending an empty progress
-    postMessage({ type: 'processedBitmap', final: true, progress: 100 });
+    // when finalize requested, optionally send final image indicating completion
+    postMessage({ type:'processed', final:true, progress:100 });
   } else if(data.type === 'feedback'){
-    // feedback sent: data.alpha is ArrayBuffer
-    const alphaArr = new Uint8Array(data.alpha);
-    applyFeedback(alphaArr, data.kind);
-    // optional: immediately recompute exclusion after feedback
-    if(history.length >= 4) computeExclusionFromHistory();
-    postMessage({ type: 'log', msg: `Applied feedback ${data.kind}` });
+    // in this design main did not send an alpha buffer for feedback; we accept simple 'like'/'dislike' which toggles accum globally
+    if(data.kind === 'like'){
+      // gently boost accum in regions with recent high accums
+      const n = maskW*maskH;
+      for(let i=0;i<n;i++){
+        if(accum[i] > 0.35) accum[i] = Math.min(1, accum[i] + 0.12);
+      }
+      postMessage({ type:'log', msg:'Applied LIKE feedback' });
+    } else if(data.kind === 'dislike'){
+      const n = maskW*maskH;
+      for(let i=0;i<n;i++){
+        if(accum[i] > 0.25) accum[i] = Math.max(0, accum[i] - 0.35);
+      }
+      postMessage({ type:'log', msg:'Applied DISLIKE feedback' });
+    }
+    // recompute exclusion
+    if(history.length >= 4) updateExclusion();
   } else if(data.type === 'reset'){
-    // reset accumMask/history
     initMasks(maskW, maskH);
-    postMessage({ type: 'log', msg: 'Reset accum masks/history' });
+    postMessage({ type:'log', msg:'Reset accum & history' });
   }
 };
