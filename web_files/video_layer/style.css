@@ -1,7 +1,35 @@
-body { background:#0d1117; color:#c9d1d9; font-family:Arial,sans-serif; text-align:center; margin:0; padding:1em; }
-h1 { color:#58a6ff; margin-bottom:1em; }
-.controls { margin-bottom:1em; }
-button, select, input[type=file] { margin:0.2em; padding:0.5em 1em; border-radius:6px; border:none; font-weight:600; cursor:pointer; }
-button:hover, select:hover, input[type=file]:hover { background:#2ea043; color:#fff; }
-canvas { border:2px solid #30363d; border-radius:8px; margin-top:1em; max-width:90%; height:auto; }
-#status { margin-top:1em; color:#8b949e; }
+:root{
+  --bg:#0d1117; --panel:#161b22; --muted:#8b949e; --accent:#58a6ff; --accent-2:#2ea043; --text:#c9d1d9;
+}
+*{box-sizing:border-box}
+html,body{height:100%; margin:0; background:var(--bg); color:var(--text); font-family:Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; -webkit-font-smoothing:antialiased}
+.topbar{padding:12px 16px; text-align:center}
+.topbar h1{margin:0;font-size:1.1rem;color:var(--accent)}
+.topbar .subtitle{margin:4px 0 0; font-size:0.85rem; color:var(--muted)}
+
+.container{display:flex; flex-direction:column; gap:12px; padding:12px; max-width:1200px; margin:0 auto}
+.controls{background:var(--panel); border-radius:12px; padding:12px; display:flex; flex-direction:column; gap:10px}
+.control-row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+.control-row .label{min-width:110px; font-size:0.9rem; color:var(--muted)}
+input[type=file]{background:transparent; color:var(--text)}
+select, input[type="range"]{padding:8px; border-radius:8px; border:1px solid #262b32; background:#0b1116; color:var(--text)}
+#qualityLabel{margin-left:8px; font-size:0.85rem; color:var(--muted)}
+
+.button-row{display:flex; gap:8px; flex-wrap:wrap}
+button{padding:8px 12px; border-radius:8px; border:none; font-weight:600; cursor:pointer}
+.btn-primary{background:linear-gradient(180deg,var(--accent) 0%, #3fa7ff 100%); color:#021028}
+.btn-secondary{background:#1f2933; color:var(--text)}
+.btn-danger{background:#8b1010; color:#fff}
+.btn-download{background:linear-gradient(180deg,var(--accent-2),#2ea043); color:#021028}
+
+.info-row{display:flex; justify-content:space-between; font-size:0.85rem; color:var(--muted)}
+
+.canvas-wrap{display:flex; justify-content:center; align-items:center; background:transparent; padding:8px}
+canvas{max-width:100%; border-radius:10px; box-shadow:0 6px 18px rgba(0,0,0,0.6); background:#000; width:100%; height:auto; display:block}
+
+/* Responsive: show controls as columns on narrow screens */
+@media (min-width:720px){
+  .container{flex-direction:row}
+  .controls{flex:0 0 360px}
+  .canvas-wrap{flex:1}
+}
