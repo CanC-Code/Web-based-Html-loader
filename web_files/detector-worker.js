@@ -1,27 +1,75 @@
-// detector-worker.js — background frame processor using Mediapipe
-importScripts("https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js");
+// detector-worker.js — AI-powered frame processor
+self.importScripts('https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js');
 
 let seg = null;
+let ready = false;
 
-self.onmessage = async (e) => {
-  const { type, frame, width, height, effect } = e.data;
+// Initialize MediaPipe
+function initSegmentation(){
+  if(seg) return;
+  seg = new SelfieSegmentation({locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`});
+  seg.setOptions({ modelSelection: 1 });
+  seg.onResults(results => {
+    if(!self.currentFrame) return;
 
-  if (type === "init") {
-    seg = new SelfieSegmentation({
-      locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`
+    const { effect, exclude } = self.currentOptions;
+    const width = self.currentFrame.width;
+    const height = self.currentFrame.height;
+
+    // Create an ImageBitmap from the segmentation mask
+    createImageBitmap(results.segmentationMask).then(maskBitmap=>{
+      // Draw to OffscreenCanvas
+      const off = new OffscreenCanvas(width, height);
+      const ctx = off.getContext('2d');
+
+      ctx.clearRect(0,0,width,height);
+      ctx.drawImage(self.currentFrame,0,0,width,height);
+
+      ctx.save();
+      if(effect==='remove'){
+        ctx.globalCompositeOperation = 'destination-in';
+      } else if(effect==='blur'){
+        ctx.filter = 'blur(10px)';
+        ctx.globalCompositeOperation = 'destination-over';
+      }
+
+      // Exclusion: skip specific regions (fan) — simple color-based placeholder
+      if(exclude==='fan'){
+        // Example: mask upper 20% of canvas
+        ctx.fillStyle='black';
+        ctx.fillRect(0,0,width,height*0.2);
+      }
+
+      ctx.drawImage(maskBitmap,0,0,width,height);
+      ctx.restore();
+
+      // Send back as ImageBitmap for main thread
+      off.convertToBlob().then(blob=>{
+        createImageBitmap(blob).then(finalBitmap=>{
+          self.postMessage({type:'mask', mask: finalBitmap}, [finalBitmap]);
+        });
+      });
     });
-    seg.setOptions({ modelSelection: 1 });
-    seg.onResults(results => {
-      self.postMessage({ type: "mask", mask: results.segmentationMask, effect });
-    });
-    self.postMessage({ type: "ready" });
-  }
+  });
 
-  if (type === "process" && seg) {
-    // create an offscreen canvas to feed the frame
-    const offCanvas = new OffscreenCanvas(width, height);
-    const offCtx = offCanvas.getContext('2d');
-    offCtx.putImageData(frame, 0, 0);
-    seg.send({ image: offCanvas });
+  ready = true;
+}
+
+self.onmessage = e=>{
+  const data = e.data;
+  if(data.type==='init'){
+    initSegmentation();
+    self.postMessage({type:'log', msg:'Worker ready'});
+  } else if(data.type==='process'){
+    if(!ready) return;
+
+    const { frame, effect, exclude, width, height } = data;
+
+    // Convert frame to ImageBitmap for MediaPipe
+    createImageBitmap(frame).then(bitmap=>{
+      self.currentFrame = bitmap;
+      self.currentOptions = { effect, exclude };
+      seg.send({image: bitmap});
+    });
   }
 };
