@@ -3,208 +3,204 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI Video Background Removal — Worker</title>
+<title>Video Layer — AI Editor with Exclusion</title>
 <link rel="stylesheet" href="style.css">
+<style>
+:root {
+  --bg:#0d1117; --panel:#0f1720; --muted:#8b949e;
+  --accent:#58a6ff; --btn:#238636;
+}
+html, body { height:100%; margin:0; padding:0; background:var(--bg); color:#c9d1d9; font-family:Inter, system-ui, sans-serif; display:flex; flex-direction:column; align-items:center; padding:12px; box-sizing:border-box; }
+header { text-align:center; margin-bottom:8px; }
+h1 { margin:0; color:var(--accent); font-size:1.2rem; }
+p.lead { margin:4px 0 0 0; color:var(--muted); }
+main { width:100%; max-width:900px; display:flex; flex-direction:column; gap:12px; }
+.mediaBox { background:#07080a; border:1px solid #16181c; border-radius:12px; padding:10px; }
+.mediaInner { display:flex; flex-direction:column; align-items:center; gap:10px; }
+video, canvas { width:100%; max-width:840px; border-radius:10px; background:#000; }
+
+.controls { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; background:#0b0d10; border-radius:10px; border:1px solid #111317; padding:10px; }
+button, select, input[type=file] { background:var(--btn); color:#fff; border:none; border-radius:8px; padding:10px; font-weight:600; cursor:pointer; }
+button:disabled { opacity:0.6; cursor:not-allowed; }
+.aux { background:#111315; color:var(--muted); }
+.progressWrap { width:100%; margin-top:8px; }
+.progress { width:100%; height:8px; background:#0b0b0b; border:1px solid #151619; border-radius:6px; overflow:hidden; }
+.progress > div { height:100%; width:0%; background:linear-gradient(90deg,#3bd,#58a6ff); transition:width .1s linear; }
+#status { text-align:center; margin-top:6px; font-size:.9rem; color:var(--muted); }
+@media(max-width:640px){ button, select { width:100%; font-size:.95rem; } }
+</style>
 </head>
 <body>
 
 <header>
-<h1>AI Video Background Removal</h1>
-<p class="lead">Load video, select effect, process in the background, then play or download.</p>
+  <h1>Video Layer — AI Editor</h1>
+  <p class="lead">Load video, select effect, choose exclusions, then process and save.</p>
 </header>
 
 <main>
-<section class="mediaBox">
-  <div class="mediaInner">
-    <input id="videoInput" type="file" accept="video/*">
-    <video id="inputVideo" playsinline controls></video>
-    <canvas id="outputCanvas"></canvas>
+  <section class="mediaBox">
+    <div class="mediaInner">
+      <input id="videoInput" type="file" accept="video/*">
+      <video id="inputVideo" controls playsinline></video>
+      <canvas id="outputCanvas" aria-label="Processed output"></canvas>
+    </div>
+  </section>
+
+  <section class="controls">
+    <button id="processBtn">Process Video</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <button id="playBtn" disabled>Play Result</button>
+    <button id="downloadBtn" disabled>Download</button>
+    <select id="effectSelect" class="aux">
+      <option value="remove">Background Removal</option>
+      <option value="blur">Background Blur</option>
+    </select>
+    <select id="excludeSelect" class="aux">
+      <option value="none">Exclude: None</option>
+      <option value="fan">Exclude: Fan</option>
+    </select>
+  </section>
+
+  <div class="progressWrap">
+    <div class="progress"><div id="progressFill"></div></div>
   </div>
-</section>
 
-<section class="controls">
-  <select id="effectSelect" class="aux">
-    <option value="remove">Background Remove</option>
-    <option value="blur">Background Blur</option>
-  </select>
-  <button id="processBtn">Process Video</button>
-  <button id="playBtn" disabled>Play</button>
-  <button id="pauseBtn" disabled>Pause</button>
-  <button id="downloadBtn" disabled>Download</button>
-</section>
-
-<div class="progressWrap">
-  <div class="progress"><div id="progressFill"></div></div>
-</div>
-<div id="status">Ready.</div>
+  <div id="status">Ready.</div>
 </main>
 
 <script>
 const videoInput = document.getElementById('videoInput');
 const inputVideo = document.getElementById('inputVideo');
-const outCanvas = document.getElementById('outputCanvas');
-const outCtx = outCanvas.getContext('2d');
+const outputCanvas = document.getElementById('outputCanvas');
+const ctx = outputCanvas.getContext('2d');
 
 const processBtn = document.getElementById('processBtn');
+const stopBtn = document.getElementById('stopBtn');
 const playBtn = document.getElementById('playBtn');
-const pauseBtn = document.getElementById('pauseBtn');
 const downloadBtn = document.getElementById('downloadBtn');
 const effectSelect = document.getElementById('effectSelect');
+const excludeSelect = document.getElementById('excludeSelect');
 
 const progressFill = document.getElementById('progressFill');
 const statusEl = document.getElementById('status');
 
-let processedFrames = [];
-let worker = null;
 let processing = false;
+let recordedBlobs = [];
+let mediaRecorder = null;
+let worker = null;
 
-function setStatus(msg){statusEl.textContent=msg;}
-function setProgress(p){progressFill.style.width=`${p}%`;}
+// Helper
+function setStatus(text){ statusEl.textContent = text; }
+function setProgress(p){ progressFill.style.width = `${Math.max(0,Math.min(100,p))}%`; }
 
-// === VIDEO LOAD ===
+// Video load
 videoInput.addEventListener('change', e=>{
-  const file=e.target.files[0];
+  const file = e.target.files[0];
   if(!file) return;
-  inputVideo.src=URL.createObjectURL(file);
+  inputVideo.src = URL.createObjectURL(file);
   inputVideo.load();
-  inputVideo.onloadeddata=()=>{
-    outCanvas.width=inputVideo.videoWidth;
-    outCanvas.height=inputVideo.videoHeight;
-    setStatus('Video loaded.');
+  inputVideo.onloadeddata = () => {
+    outputCanvas.width = inputVideo.videoWidth;
+    outputCanvas.height = inputVideo.videoHeight;
+    setStatus(`Video loaded (${inputVideo.videoWidth}x${inputVideo.videoHeight})`);
     setProgress(0);
-    processBtn.disabled=false;
-    playBtn.disabled=true;
-    pauseBtn.disabled=true;
-    downloadBtn.disabled=true;
-    processedFrames=[];
+    processBtn.disabled = false;
+    stopBtn.disabled = true;
+    playBtn.disabled = true;
+    downloadBtn.disabled = true;
   };
 });
 
-// === WORKER INIT ===
+// Initialize worker
 function initWorker(){
-  return new Promise(res=>{
-    worker = new Worker('detector-worker.js');
-    worker.onmessage = e=>{
-      const data = e.data;
-      if(data.type==='ready') res();
-      else if(data.type==='mask') applyMask(data.mask, data.effect);
-    };
-    worker.postMessage({ type:'init' });
-  });
-}
-
-// === PROCESS VIDEO ===
-processBtn.addEventListener('click', async ()=>{
-  if(!inputVideo.src) return;
-  processBtn.disabled=true;
-  setStatus('Initializing worker...');
-  await initWorker();
-  setStatus('Processing video...');
-  processedFrames=[];
-  inputVideo.currentTime=0;
-  await inputVideo.play().catch(()=>{});
-
-  const totalFrames = Math.floor(inputVideo.duration*25);
-  let frameIndex=0;
-  processing=true;
-
-  function processFrame(){
-    if(inputVideo.paused || inputVideo.ended || !processing){
-      finishProcessing();
-      return;
+  if(worker) worker.terminate();
+  worker = new Worker('detector-worker.js');
+  worker.onmessage = (e)=>{
+    const msg = e.data;
+    if(msg.type === 'mask'){
+      ctx.clearRect(0,0,outputCanvas.width,outputCanvas.height);
+      ctx.drawImage(msg.mask,0,0,outputCanvas.width,outputCanvas.height);
+    } else if(msg.type==='log'){
+      console.log(msg.msg);
     }
-
-    outCtx.drawImage(inputVideo,0,0,outCanvas.width,outCanvas.height);
-    const frame=outCtx.getImageData(0,0,outCanvas.width,outCanvas.height);
-    worker.postMessage({
-      type:'process',
-      frame,
-      width:outCanvas.width,
-      height:outCanvas.height,
-      effect:effectSelect.value
-    });
-
-    processedFrames.push(frame);
-    frameIndex++;
-    setProgress(Math.floor((frameIndex/totalFrames)*100));
-
-    requestAnimationFrame(processFrame);
-  }
-
-  processFrame();
-});
-
-// === APPLY MASK ===
-function applyMask(maskImg, effect){
-  // maskImg is an ImageBitmap from worker
-  const tempCanvas=document.createElement('canvas');
-  tempCanvas.width=outCanvas.width;
-  tempCanvas.height=outCanvas.height;
-  const tempCtx=tempCanvas.getContext('2d');
-  tempCtx.putImageData(processedFrames[processedFrames.length-1],0,0);
-
-  outCtx.clearRect(0,0,outCanvas.width,outCanvas.height);
-
-  if(effect==='remove'){
-    outCtx.drawImage(tempCanvas,0,0);
-    outCtx.globalCompositeOperation='destination-in';
-    outCtx.drawImage(maskImg,0,0,outCanvas.width,outCanvas.height);
-    outCtx.globalCompositeOperation='source-over';
-  }else if(effect==='blur'){
-    outCtx.save();
-    outCtx.filter='blur(10px)';
-    outCtx.globalCompositeOperation='destination-over';
-    outCtx.drawImage(tempCanvas,0,0);
-    outCtx.restore();
-
-    outCtx.globalCompositeOperation='destination-in';
-    outCtx.drawImage(maskImg,0,0,outCanvas.width,outCanvas.height);
-    outCtx.globalCompositeOperation='source-over';
-  }
-}
-
-// === FINISH PROCESSING ===
-function finishProcessing(){
-  processing=false;
-  setStatus('Processing complete.');
-  playBtn.disabled=false;
-  pauseBtn.disabled=false;
-  downloadBtn.disabled=false;
-  inputVideo.pause();
-  inputVideo.currentTime=0;
-}
-
-// === PLAYBACK ===
-let playIndex=0, playInterval=null;
-playBtn.addEventListener('click',()=>{
-  if(processedFrames.length===0) return;
-  clearInterval(playInterval);
-  playIndex=0;
-  playInterval=setInterval(()=>{
-    outCtx.putImageData(processedFrames[playIndex],0,0);
-    playIndex++;
-    if(playIndex>=processedFrames.length) clearInterval(playInterval);
-  },40);
-});
-pauseBtn.addEventListener('click',()=>clearInterval(playInterval));
-
-// === DOWNLOAD ===
-downloadBtn.addEventListener('click',()=>{
-  const stream=outCanvas.captureStream(25);
-  const recorder=new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp8'});
-  const chunks=[];
-  recorder.ondataavailable=e=>{if(e.data.size) chunks.push(e.data);}
-  recorder.onstop=()=>{
-    const blob=new Blob(chunks,{type:'video/webm'});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');
-    a.href=url;
-    a.download=`processed_${Date.now()}.webm`;
-    a.click();
-    setStatus('Downloaded processed video.');
   };
-  recorder.start();
-  setTimeout(()=>recorder.stop(),processedFrames.length*40);
+  worker.postMessage({type:'init'});
+}
+
+// Process loop
+let rafId = null;
+function processLoop(){
+  if(!processing) return;
+  ctx.drawImage(inputVideo,0,0,outputCanvas.width,outputCanvas.height);
+
+  const frame = ctx.getImageData(0,0,outputCanvas.width,outputCanvas.height);
+
+  worker.postMessage({
+    type:'process',
+    frame,
+    width:outputCanvas.width,
+    height:outputCanvas.height,
+    effect:effectSelect.value,
+    exclude:excludeSelect.value
+  });
+
+  setProgress((inputVideo.currentTime/inputVideo.duration)*100);
+
+  rafId = requestAnimationFrame(processLoop);
+}
+
+// Buttons
+processBtn.addEventListener('click', ()=>{
+  if(!inputVideo.src) return;
+  setStatus('Processing started...');
+  processing = true;
+  processBtn.disabled = true;
+  stopBtn.disabled = false;
+  playBtn.disabled = true;
+  downloadBtn.disabled = true;
+
+  recordedBlobs = [];
+  const stream = outputCanvas.captureStream(25);
+  mediaRecorder = new MediaRecorder(stream, { mimeType:'video/webm;codecs=vp8' });
+  mediaRecorder.ondataavailable = e=>{ if(e.data && e.data.size) recordedBlobs.push(e.data); };
+  mediaRecorder.start();
+
+  initWorker();
+  inputVideo.currentTime = 0;
+  inputVideo.play().catch(()=>{});
+  processLoop();
+});
+
+stopBtn.addEventListener('click', ()=>{
+  processing=false;
+  cancelAnimationFrame(rafId);
+  stopBtn.disabled=true;
+  processBtn.disabled=false;
+  playBtn.disabled=recordedBlobs.length>0?false:true;
+  downloadBtn.disabled=recordedBlobs.length>0?false:true;
+  inputVideo.pause();
+  if(mediaRecorder && mediaRecorder.state==='recording') mediaRecorder.stop();
+  setStatus('Processing stopped.');
+});
+
+playBtn.addEventListener('click', ()=>{
+  if(recordedBlobs.length===0) return;
+  const blob = new Blob(recordedBlobs,{type:'video/webm'});
+  const url = URL.createObjectURL(blob);
+  inputVideo.src = url;
+  inputVideo.play();
+  setStatus('Playing processed video');
+});
+
+downloadBtn.addEventListener('click', ()=>{
+  if(recordedBlobs.length===0) return;
+  const blob = new Blob(recordedBlobs,{type:'video/webm'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href=url;
+  a.download=`processed_${Date.now()}.webm`;
+  a.click();
+  setStatus('Video downloaded');
 });
 </script>
 </body>
