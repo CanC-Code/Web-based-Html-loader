@@ -1,74 +1,56 @@
-// detector.js
-let Detector = {
-  worker: null,
-  ready: false,
-  maskCallback: null,
-  mode: "human",
+// detector.js — bridge between main thread and worker
+class Detector {
+  static worker = null;
+  static ready = false;
 
-  async init({ mode="human" }={}) {
-    if (!window.Worker) throw new Error("Web Workers not supported");
-    if (this.worker) this.worker.terminate();
-
+  static async init() {
+    if (this.worker) return;
     this.worker = new Worker("detector-worker.js");
-    this.mode = mode;
-
-    return new Promise((resolve, reject) => {
-      this.worker.onmessage = e => {
-        const msg = e.data;
-        if (msg.type === "log") console.log("[detector]", msg.msg);
-
-        if (msg.type === "mask" && this.maskCallback) {
-          this.maskCallback(msg.maskData);
+    this.worker.onmessage = e => {
+      const { type, maskData, width, height, msg } = e.data;
+      if (type === "log") console.log("[Worker]", msg);
+      else if (type === "mask") {
+        if (Detector.onMask) {
+          const arr = new Uint8ClampedArray(maskData);
+          Detector.onMask({ data: arr, width, height });
         }
-
-        if (!this.ready) { this.ready = true; resolve(); }
+      } else if (type === "error") console.error("[Worker]", msg);
+    };
+    return new Promise(resolve => {
+      const checkReady = msg => {
+        if (msg.type === "log" && msg.msg === "Detector ready") {
+          Detector.ready = true;
+          resolve();
+        }
       };
-      this.worker.onerror = err => reject(err);
+      this.worker.onmessage = e => {
+        checkReady(e.data);
+        // always forward mask/error
+        if (Detector.onMask) Detector.onMask(e.data);
+      };
     });
-  },
-
-  async processFrame(frame, options={}) {
-    if (!this.ready) throw new Error("Detector not ready");
-    return new Promise((resolve, reject) => {
-      this.maskCallback = mask => resolve(mask);
-      this.worker.postMessage({
-        type: "process",
-        frame: frame,
-        mode: options.mode || this.mode
-      });
-    });
-  },
-
-  applyMask(ctx, mask) {
-    if (!mask) return;
-
-    // blur mode: composite human over blurred background
-    if (this.mode === "blur") {
-      const w = ctx.canvas.width;
-      const h = ctx.canvas.height;
-
-      // step 1: draw original frame blurred
-      ctx.save();
-      ctx.filter = "blur(12px)";
-      ctx.drawImage(ctx.canvas, 0, 0, w, h);
-      ctx.restore();
-
-      // step 2: overlay human using mask
-      ctx.save();
-      ctx.globalCompositeOperation = "destination-in";
-      ctx.drawImage(mask, 0, 0, w, h);
-      ctx.restore();
-
-      // step 3: overlay original human over blurred background
-      ctx.save();
-      ctx.globalCompositeOperation = "destination-over";
-      ctx.drawImage(ctx.canvas, 0, 0, w, h);
-      ctx.restore();
-    } else {
-      ctx.save();
-      ctx.globalCompositeOperation = "destination-in";
-      ctx.drawImage(mask, 0, 0, ctx.canvas.width, ctx.canvas.height);
-      ctx.restore();
-    }
   }
-};
+
+  static processFrame(frame, mode = "remove") {
+    if (!this.worker || !this.ready) return;
+    this.worker.postMessage({ type: "process", frame, mode });
+  }
+
+  static applyMask(ctx, maskObj, mode = "remove") {
+    if (!maskObj) return;
+    const { data, width, height } = maskObj;
+    const mask = new ImageData(data, width, height);
+
+    // draw original frame
+    ctx.globalCompositeOperation = "source-over";
+
+    if (mode === "remove") {
+      ctx.globalCompositeOperation = "destination-in"; // keep only human
+    } else if (mode === "blur") {
+      ctx.globalCompositeOperation = "destination-in";
+    }
+
+    ctx.putImageData(mask, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
+  }
+}
