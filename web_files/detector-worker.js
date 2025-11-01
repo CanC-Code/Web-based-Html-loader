@@ -1,40 +1,47 @@
-// detector-worker.js — AI segmentation worker
+// detector-worker.js — threaded AI processing
 importScripts("https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js");
 
-let segmenter = null;
+let seg = null;
 let ready = false;
-let frameQueue = [];
 
-// Initialize MediaPipe SelfieSegmentation
-async function initDetector() {
-  segmenter = new SelfieSegmentation({
-    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`
-  });
-  segmenter.setOptions({ modelSelection: 1 });
-  segmenter.onResults(results => {
-    const maskCanvas = new OffscreenCanvas(results.segmentationMask.width, results.segmentationMask.height);
-    const ctx = maskCanvas.getContext('2d');
-    ctx.drawImage(results.segmentationMask, 0, 0);
-    const imgData = ctx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
-    postMessage({ type: "mask", maskData: imgData.data.buffer, width: imgData.width, height: imgData.height }, [imgData.data.buffer]);
-  });
-  ready = true;
-  postMessage({ type: "log", msg: "Detector ready" });
-}
-
-initDetector();
-
-// Queue frames for processing
-self.onmessage = async e => {
+onmessage = async (e) => {
   const { type, frame, mode } = e.data;
-  if (type !== "process" || !ready) return;
+  if (type !== "process") return;
 
   try {
-    // Create ImageBitmap for fast worker processing
-    const bitmap = await createImageBitmap(frame);
-    segmenter.send({ image: bitmap });
-    bitmap.close();
+    if (!seg) {
+      seg = new SelfieSegmentation({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}` });
+      seg.setOptions({ modelSelection: 1 });
+      ready = true;
+      postMessage({ type: "log", msg: "MediaPipe initialized in worker" });
+    }
+
+    // Convert ImageBitmap to canvas
+    const off = new OffscreenCanvas(frame.width, frame.height);
+    const ctx = off.getContext("2d");
+    ctx.drawImage(frame, 0, 0, frame.width, frame.height);
+
+    let maskData = null;
+
+    await new Promise((resolve) => {
+      seg.onResults((results) => {
+        const maskCanvas = new OffscreenCanvas(frame.width, frame.height);
+        const mctx = maskCanvas.getContext("2d");
+        mctx.drawImage(results.segmentationMask, 0, 0, frame.width, frame.height);
+
+        const imgData = mctx.getImageData(0, 0, frame.width, frame.height);
+        if (mode === "blur") {
+          // optional: simple blur by canvas filter
+          mctx.filter = 'blur(8px)';
+          mctx.drawImage(results.segmentationMask, 0, 0, frame.width, frame.height);
+        }
+        maskData = imgData.data;
+        postMessage({ type: "mask", maskData, width: imgData.width, height: imgData.height });
+        resolve();
+      });
+      seg.send({ image: off });
+    });
   } catch (err) {
-    postMessage({ type: "error", msg: err.toString() });
+    postMessage({ type: "log", msg: "Worker error: " + err });
   }
 };
