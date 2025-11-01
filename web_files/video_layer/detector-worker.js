@@ -1,59 +1,29 @@
-// detector-worker.js — Hybrid AI video processor
-self.importScripts("https://docs.opencv.org/4.x/opencv.js");
+importScripts('https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js');
 
-let ready = false;
-cv['onRuntimeInitialized'] = () => { ready=true; postMessage({type:"log", msg:"OpenCV Worker Ready"}); };
+let segmentation = null;
 
-let prevGray = null;
-let feedbackMasks = [];
+async function initSegmentation() {
+  segmentation = new SelfieSegmentation({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}` });
+  segmentation.setOptions({ modelSelection: 1, selfieMode: true });
+  segmentation.onResults(onResults);
+  postMessage({ type: 'ready' });
+}
 
-self.onmessage = e=>{
-  const {type, frame, mode, feedback, mask} = e.data;
+function onResults(results) {
+  const maskImage = results.segmentationMask;
+  const width = maskImage.width;
+  const height = maskImage.height;
+  const mask = new Uint8ClampedArray(width * height);
 
-  if(type==="feedback" && mask){
-    feedbackMasks.push({mask, feedback});
-    if(feedbackMasks.length>20) feedbackMasks.shift();
-    return;
-  }
+  for (let i = 0; i < width * height; i++) mask[i] = maskImage.data[i] * 255;
 
-  if(type!=="process" || !ready) return;
+  postMessage(mask, [mask.buffer]);
+}
 
-  try{
-    const src = cv.matFromImageData(frame);
-    const gray = new cv.Mat();
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    const maskMat = new cv.Mat();
-
-    if(mode==="motion" && prevGray){
-      cv.absdiff(gray, prevGray, maskMat);
-      cv.threshold(maskMat, maskMat, 25, 255, cv.THRESH_BINARY);
-      cv.medianBlur(maskMat, maskMat, 5);
-    } else if(mode==="all"){
-      cv.Canny(gray, maskMat, 80, 160);
-    } else {
-      cv.threshold(gray, maskMat, 128, 255, cv.THRESH_BINARY);
-    }
-
-    if(prevGray) prevGray.delete();
-    prevGray = gray.clone();
-    src.delete(); gray.delete();
-
-    // Apply feedback exclusions
-    if(feedbackMasks.length>0){
-      feedbackMasks.forEach(fb=>{
-        if(fb.feedback==="dislike"){
-          maskMat.data.set(maskMat.data.map((v,i)=> fb.mask.data[i]>0 ? 0 : v));
-        }
-        if(fb.feedback==="like"){
-          maskMat.data.set(maskMat.data.map((v,i)=> fb.mask.data[i]>0 ? 255 : v));
-        }
-      });
-    }
-
-    postMessage({type:"mask", maskData: maskMat.data.slice(0), width: maskMat.cols, height: maskMat.rows});
-    maskMat.delete();
-
-  }catch(err){
-    postMessage({type:"log", msg:"Worker error: "+err});
+onmessage = async e => {
+  if (e.data.type === 'init') await initSegmentation();
+  else {
+    const frame = e.data;
+    createImageBitmap(frame).then(img => segmentation.send({ image: img }));
   }
 };
