@@ -1,45 +1,37 @@
-// detector-worker.js — OpenCV background processor
-self.importScripts("https://docs.opencv.org/4.x/opencv.js");
+// detector-worker.js — AI-powered background remover
+importScripts("https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js");
 
-let ready = false;
-cv["onRuntimeInitialized"] = () => {
-  ready = true;
-  postMessage({ type: "log", msg: "OpenCV initialized" });
-};
+let seg;
 
-let prevGray = null;
+self.onmessage = async (e) => {
+  const { type, frame } = e.data;
+  if(type !== "process") return;
 
-self.onmessage = (e) => {
-  const { type, frame, mode } = e.data;
-  if (type !== "process" || !ready) return;
-
-  try {
-    const src = cv.matFromImageData(frame);
-    const gray = new cv.Mat();
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    const mask = new cv.Mat();
-
-    if (mode === "motion" && prevGray) {
-      cv.absdiff(gray, prevGray, mask);
-      cv.threshold(mask, mask, 25, 255, cv.THRESH_BINARY);
-      cv.medianBlur(mask, mask, 5);
-    } else {
-      cv.Canny(gray, mask, 80, 160);
-    }
-
-    if (prevGray) prevGray.delete();
-    prevGray = gray.clone();
-    src.delete(); gray.delete();
-
-    postMessage({
-      type: "mask",
-      maskData: mask.data.slice(0),
-      width: mask.cols,
-      height: mask.rows,
-    });
-
-    mask.delete();
-  } catch (err) {
-    postMessage({ type: "log", msg: "Worker error: " + err });
+  if(!seg){
+    seg = new SelfieSegmentation({locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`});
+    seg.setOptions({ modelSelection: 1 });
+    await new Promise(resolve => seg.onResults(() => resolve()));
   }
+
+  // Convert ImageData to HTMLCanvasElement for MediaPipe
+  const offCanvas = new OffscreenCanvas(frame.width, frame.height);
+  const offCtx = offCanvas.getContext("2d");
+  offCtx.putImageData(frame, 0, 0);
+
+  // Process frame
+  seg.send({ image: offCanvas }).then(() => {
+    // SelfieSegmentation automatically triggers onResults
+    seg.onResults(results => {
+      // segmentationMask is a canvas ImageBitmap
+      if(results.segmentationMask){
+        createImageBitmap(results.segmentationMask).then(maskBitmap => {
+          const maskCanvas = new OffscreenCanvas(frame.width, frame.height);
+          const maskCtx = maskCanvas.getContext("2d");
+          maskCtx.drawImage(maskBitmap, 0, 0, frame.width, frame.height);
+          const maskData = maskCtx.getImageData(0, 0, frame.width, frame.height).data;
+          self.postMessage({ type: "mask", maskData, width: frame.width, height: frame.height });
+        });
+      }
+    });
+  });
 };
