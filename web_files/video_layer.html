@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI Video Layer Editor</title>
+<title>AI Video Layer Editor — Modes & Playback</title>
 <link rel="stylesheet" href="style.css">
 <style>
-  body { background:#0d1117; color:#c9d1d9; font-family:Arial,sans-serif; display:flex; flex-direction:column; align-items:center; padding:1em; }
-  h1 { color:#58a6ff; margin-bottom:0.5em; }
-  video, canvas { width:100%; max-width:720px; border-radius:12px; margin-bottom:0.5em; }
-  .controls { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; margin:0.5em 0; }
-  button, select, input[type="file"] { padding:10px; border-radius:8px; border:none; font-weight:700; cursor:pointer; background:#238636; color:#fff; }
-  button:disabled { background:#2f3338; opacity:0.7; cursor:not-allowed; }
-  .progress { width:100%; max-width:720px; height:8px; background:#111; border-radius:6px; overflow:hidden; margin-top:0.5em; }
-  .progress > div { height:100%; width:0%; background:linear-gradient(90deg,#3bd,#58a6ff); transition:width 0.1s linear; }
-  #status { margin-top:0.5em; color:#8b949e; font-size:0.9rem; text-align:center; }
+body { background:#0d1117; color:#c9d1d9; font-family:Arial,sans-serif; display:flex; flex-direction:column; align-items:center; padding:1em; }
+h1 { color:#58a6ff; margin-bottom:0.5em; }
+video, canvas { width:100%; max-width:720px; border-radius:12px; margin-bottom:0.5em; }
+.controls { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; margin:0.5em 0; }
+button, input[type="file"] { padding:10px; border-radius:8px; border:none; font-weight:700; cursor:pointer; background:#238636; color:#fff; }
+button:disabled { background:#2f3338; opacity:0.7; cursor:not-allowed; }
+.progress { width:100%; max-width:720px; height:8px; background:#111; border-radius:6px; overflow:hidden; margin-top:0.5em; }
+.progress > div { height:100%; width:0%; background:linear-gradient(90deg,#3bd,#58a6ff); transition:width 0.1s linear; }
+#status { margin-top:0.5em; color:#8b949e; font-size:0.9rem; text-align:center; }
 </style>
 </head>
 <body>
@@ -27,8 +27,12 @@
 <canvas id="outputCanvas"></canvas>
 
 <div class="controls">
+  <button id="modeMotion">Motion</button>
+  <button id="modeHuman">Human Only</button>
+  <button id="modeAll">All Objects</button>
   <button id="startBtn">Start Processing</button>
   <button id="stopBtn" disabled>Stop</button>
+  <button id="playResultBtn" disabled>Play Processed</button>
   <button id="saveBtn" disabled>Save Video</button>
 </div>
 
@@ -45,101 +49,133 @@ const outCtx = outCanvas.getContext('2d');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const saveBtn = document.getElementById('saveBtn');
-
+const playResultBtn = document.getElementById('playResultBtn');
 const progressFill = document.getElementById('progressFill');
 const statusEl = document.getElementById('status');
 
-let processing = false;
-let recorder = null;
-let recordedBlobs = [];
-let pendingProcess = null;
+const modeButtons = {
+  motion: document.getElementById('modeMotion'),
+  human: document.getElementById('modeHuman'),
+  all: document.getElementById('modeAll')
+};
 
-function setStatus(s){ statusEl.textContent = s; }
-function setProgress(p){ progressFill.style.width = `${p}%`; }
+let processing=false;
+let recorder=null;
+let recordedBlobs=[];
+let pendingProcess=null;
+let selectedMode='human';
 
-// Load video
+function setStatus(s){ statusEl.textContent=s; }
+function setProgress(p){ progressFill.style.width=`${p}%`; }
+
+// Mode button handling
+Object.entries(modeButtons).forEach(([mode,btn])=>{
+  btn.onclick=()=>{
+    selectedMode=mode;
+    Object.values(modeButtons).forEach(b=>b.disabled=false);
+    btn.disabled=true;
+    setStatus(`Mode: ${mode}`);
+  };
+});
+modeButtons[selectedMode].disabled=true;
+
+// Video load
 videoInput.addEventListener('change', e=>{
-  const f = e.target.files[0];
+  const f=e.target.files[0];
   if(!f) return;
-  inputVideo.src = URL.createObjectURL(f);
+  inputVideo.src=URL.createObjectURL(f);
   inputVideo.load();
-  inputVideo.onloadeddata = () => {
-    outCanvas.width = inputVideo.videoWidth;
-    outCanvas.height = inputVideo.videoHeight;
+  inputVideo.onloadeddata=()=>{
+    outCanvas.width=inputVideo.videoWidth;
+    outCanvas.height=inputVideo.videoHeight;
     setStatus(`Loaded video: ${inputVideo.videoWidth}×${inputVideo.videoHeight}`);
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
-    saveBtn.disabled = true;
+    startBtn.disabled=false;
+    stopBtn.disabled=true;
+    playResultBtn.disabled=true;
+    saveBtn.disabled=true;
     setProgress(0);
   };
 });
 
 // Start processing
-startBtn.addEventListener('click', async ()=>{
+startBtn.onclick=async()=>{
   if(!inputVideo.src){ setStatus("Choose a video first."); return; }
-  startBtn.disabled = true;
-  stopBtn.disabled = false;
-  saveBtn.disabled = true;
+  startBtn.disabled=true;
+  stopBtn.disabled=false;
+  playResultBtn.disabled=true;
+  saveBtn.disabled=true;
 
-  setStatus("Initializing Detector...");
-  await Detector.init();
+  setStatus("Initializing AI Detector...");
+  await Detector.init({ mode: selectedMode });
 
-  recordedBlobs = [];
-  const stream = outCanvas.captureStream(25);
-  recorder = new MediaRecorder(stream, {mimeType:'video/webm;codecs=vp8'});
-  recorder.ondataavailable = e=>{ if(e.data && e.data.size) recordedBlobs.push(e.data); };
+  recordedBlobs=[];
+  const stream=outCanvas.captureStream(25);
+  recorder=new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp8'});
+  recorder.ondataavailable=e=>{ if(e.data && e.data.size) recordedBlobs.push(e.data); };
   recorder.start(1000);
 
-  processing = true;
-  inputVideo.currentTime = 0;
+  processing=true;
+  inputVideo.currentTime=0;
   await inputVideo.play().catch(()=>{});
   setStatus("Processing started...");
   processLoop();
-});
+};
 
-// Stop processing
-stopBtn.addEventListener('click', ()=>{
-  processing = false;
-  startBtn.disabled = false;
-  stopBtn.disabled = true;
-  if(recorder && recorder.state === 'recording') recorder.stop();
-  saveBtn.disabled = recordedBlobs.length === 0;
+// Stop
+stopBtn.onclick=()=>{
+  processing=false;
+  startBtn.disabled=false;
+  stopBtn.disabled=true;
+  if(recorder && recorder.state==='recording') recorder.stop();
+  playResultBtn.disabled=recordedBlobs.length===0;
+  saveBtn.disabled=recordedBlobs.length===0;
   setStatus("Processing stopped.");
-});
+};
 
-// Save processed video
-saveBtn.addEventListener('click', ()=>{
+// Play processed video
+playResultBtn.onclick=()=>{
+  if(recordedBlobs.length===0) return;
+  const blob=new Blob(recordedBlobs,{type:'video/webm'});
+  const url=URL.createObjectURL(blob);
+  const processedVideo=document.createElement('video');
+  processedVideo.src=url;
+  processedVideo.controls=true;
+  processedVideo.autoplay=true;
+  processedVideo.style.width='100%';
+  document.body.appendChild(processedVideo);
+};
+
+// Save
+saveBtn.onclick=()=>{
   if(recordedBlobs.length===0){ setStatus("Nothing recorded."); return; }
-  const blob = new Blob(recordedBlobs, {type:'video/webm'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `processed_${Date.now()}.webm`;
+  const blob=new Blob(recordedBlobs,{type:'video/webm'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download=`processed_${Date.now()}.webm`;
   a.click();
   setStatus("Video saved.");
-});
+};
 
-// Main processing loop
-let lastTimestamp = 0;
-const targetMs = 40; // ~25fps
+// Main loop
+let lastTimestamp=0;
+const targetMs=40; // 25fps
 async function processLoop(){
   if(!processing) return;
 
   outCtx.clearRect(0,0,outCanvas.width,outCanvas.height);
   outCtx.drawImage(inputVideo,0,0,outCanvas.width,outCanvas.height);
 
-  if(performance.now()-lastTimestamp >= targetMs && !pendingProcess){
-    lastTimestamp = performance.now();
-    try {
-      const frame = outCtx.getImageData(0,0,outCanvas.width,outCanvas.height);
-      pendingProcess = Detector.processFrame(frame).then(mask=>{
-        pendingProcess = null;
-        if(mask) Detector.applyMask(outCtx, mask);
-      }).catch(err=>{
-        pendingProcess=null;
-        console.error("Frame processing error:", err);
-      });
-    } catch(err){ console.error("Processing failed:",err); }
+  if(performance.now()-lastTimestamp>=targetMs && !pendingProcess){
+    lastTimestamp=performance.now();
+    try{
+      const frame=outCtx.getImageData(0,0,outCanvas.width,outCanvas.height);
+      pendingProcess=Detector.processFrame(frame,{mode:selectedMode})
+        .then(mask=>{
+          pendingProcess=null;
+          if(mask) Detector.applyMask(outCtx,mask);
+        }).catch(err=>{ pendingProcess=null; console.error("Frame error:",err); });
+    }catch(err){ console.error("Processing failed:",err); }
   }
 
   if(inputVideo.duration) setProgress(Math.min(100,(inputVideo.currentTime/inputVideo.duration)*100));
@@ -151,6 +187,5 @@ window.addEventListener('beforeunload', e=>{
   if(processing){ e.preventDefault(); e.returnValue=''; }
 });
 </script>
-
 </body>
 </html>
