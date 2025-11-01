@@ -27,7 +27,6 @@
   }
   #status { color:#8b949e; margin-top:1em; font-size:0.9rem; text-align:center; }
 
-  /* Local file loader button */
   #localLoader {
     background:#238636; color:#fff; font-weight:600;
     border:none; border-radius:8px; padding:10px 16px;
@@ -45,21 +44,13 @@
 <div id="folderList">Loading folders...</div>
 <div id="fileList" style="display:none;"></div>
 
-<button id="localLoader">📂 Load Local HTML File</button>
+<button id="localLoader">? Load Local HTML File</button>
 <input type="file" id="localFileInput" accept=".html,.htm" />
 
 <iframe id="programFrame" sandbox="allow-same-origin allow-scripts"></iframe>
 <div id="status">Ready.</div>
 
 <script>
-// -------------------- CONFIGURATION --------------------
-const folderStructure = {
-  "video_tools": ["video_layer.html", "video_editor.html"],
-  "image_tools": ["watermark_overlay.html", "image_cutout.html"],
-  "ai_experiments": ["ai_segmentation.html", "ai_refine.html"]
-};
-
-// -------------------- ELEMENTS --------------------
 const folderList = document.getElementById('folderList');
 const fileList = document.getElementById('fileList');
 const frame = document.getElementById('programFrame');
@@ -67,7 +58,21 @@ const status = document.getElementById('status');
 const localLoader = document.getElementById('localLoader');
 const localFileInput = document.getElementById('localFileInput');
 
-// -------------------- FUNCTIONS --------------------
+let folderStructure = {};
+
+// -------------------- LOAD MANIFEST --------------------
+fetch('web_files/manifest.json')
+  .then(res => res.json())
+  .then(data => {
+    folderStructure = data;
+    showFolders();
+  })
+  .catch(err => {
+    console.error('Failed to load folder manifest:', err);
+    folderList.textContent = "Failed to load folders.";
+  });
+
+// -------------------- SHOW FOLDERS --------------------
 function showFolders() {
   fileList.style.display = "none";
   folderList.style.display = "block";
@@ -76,17 +81,19 @@ function showFolders() {
   Object.keys(folderStructure).forEach(folder => {
     const div = document.createElement('div');
     div.className = "folder-item";
-    div.textContent = `📁 ${folder}`;
+    div.textContent = `? ${folder}`;
     div.onclick = () => showFiles(folder);
     folderList.appendChild(div);
   });
+
   status.textContent = "Folder list ready.";
 }
 
+// -------------------- SHOW FILES --------------------
 function showFiles(folder) {
   folderList.style.display = "none";
   fileList.style.display = "block";
-  fileList.innerHTML = `<div class='back' onclick='showFolders()'>← Back to Folders</div>`;
+  fileList.innerHTML = `<div class='back' onclick='showFolders()'>? Back to Folders</div>`;
 
   folderStructure[folder].forEach(file => {
     const div = document.createElement('div');
@@ -98,6 +105,7 @@ function showFiles(folder) {
     };
     fileList.appendChild(div);
   });
+
   status.textContent = `Browsing folder: ${folder}`;
 }
 
@@ -107,6 +115,7 @@ localLoader.addEventListener('click', () => localFileInput.click());
 localFileInput.addEventListener('change', (event) => {
   const file = event.target.files[0];
   if (!file) return;
+
   const reader = new FileReader();
   reader.onload = e => {
     const blob = new Blob([e.target.result], { type: "text/html" });
@@ -116,9 +125,6 @@ localFileInput.addEventListener('change', (event) => {
   };
   reader.readAsText(file);
 });
-
-// -------------------- INIT --------------------
-showFolders();
 </script>
 
 </body>
