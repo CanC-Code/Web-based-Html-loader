@@ -1,31 +1,35 @@
-importScripts("https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js");
+// detector-worker.js — AI processing
+self.importScripts('https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js');
 
-let seg;
+let seg=null;
+let mode='human';
+
 self.onmessage = async e=>{
-  const {type, frame} = e.data;
-  if(type!=="process") return;
+  const {type, frame, options, mode:msgMode} = e.data;
 
-  if(!seg){
+  if(type==='init'){
+    mode = options?.mode || 'human';
     seg = new SelfieSegmentation({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`});
     seg.setOptions({modelSelection:1});
-    await new Promise(resolve=>seg.onResults(()=>resolve()));
+    seg.onResults(results=>{
+      self.postMessage({ type:'mask', maskData:results.segmentationMask?.data,
+        width:results.segmentationMask?.width,
+        height:results.segmentationMask?.height });
+    });
+    self.postMessage({ type:'ready' });
   }
 
-  const offCanvas = new OffscreenCanvas(frame.width, frame.height);
-  const offCtx = offCanvas.getContext("2d");
-  offCtx.putImageData(frame,0,0);
-
-  seg.send({image: offCanvas}).then(()=>{
-    seg.onResults(results=>{
-      if(results.segmentationMask){
-        createImageBitmap(results.segmentationMask).then(maskBitmap=>{
-          const maskCanvas=new OffscreenCanvas(frame.width,frame.height);
-          const maskCtx=maskCanvas.getContext("2d");
-          maskCtx.drawImage(maskBitmap,0,0,frame.width,frame.height);
-          const maskData=maskCtx.getImageData(0,0,frame.width,frame.height).data;
-          self.postMessage({type:"mask", maskData, width:frame.width, height:frame.height});
-        });
-      }
-    });
-  });
+  if(type==='process' && seg){
+    mode = msgMode||mode;
+    const imgBitmap = await createImageBitmap(frameToCanvas(frame));
+    seg.send({image: imgBitmap});
+  }
 };
+
+// Helper to convert ImageData to OffscreenCanvas
+function frameToCanvas(frame){
+  const c=new OffscreenCanvas(frame.width,frame.height);
+  const ctx=c.getContext('2d');
+  ctx.putImageData(frame,0,0);
+  return c;
+}
