@@ -1,175 +1,186 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Video Processor</title>
-<style>
-:root {
-  --bg:#0d1117; --panel:#0f1720; --muted:#8b949e;
-  --accent:#58a6ff; --btn:#238636;
-}
-html,body{margin:0;padding:0;height:100%;background:var(--bg);color:#c9d1d9;font-family:Inter,sans-serif;display:flex;flex-direction:column;align-items:center;box-sizing:border-box;padding:12px;}
-header{text-align:center;margin-bottom:8px;}
-h1{margin:0;color:var(--accent);font-size:1.2rem;}
-p.lead{margin:4px 0 0 0;color:var(--muted);}
-main{width:100%;max-width:900px;display:flex;flex-direction:column;gap:12px;}
-.mediaBox{background:#07080a;border:1px solid #16181c;border-radius:12px;padding:10px;}
-.mediaInner{display:flex;flex-direction:column;align-items:center;gap:10px;}
-video,canvas{width:100%;max-width:840px;border-radius:10px;background:#000;}
-.controls{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;background:#0b0d10;border-radius:10px;border:1px solid #111317;padding:10px;}
-button,select,input[type=file]{background:var(--btn);color:#fff;border:none;border-radius:8px;padding:10px;font-weight:600;cursor:pointer;}
-button:disabled{opacity:0.6;cursor:not-allowed;}
-.aux{background:#111315;color:var(--muted);}
-.progressWrap{width:100%;margin-top:8px;}
-.progress{width:100%;height:8px;background:#0b0b0b;border:1px solid #151619;border-radius:6px;overflow:hidden;}
-.progress > div{height:100%;width:0%;background:linear-gradient(90deg,#3bd,#58a6ff);transition:width .1s linear;}
-#status{text-align:center;margin-top:6px;font-size:.9rem;color:var(--muted);}
-@media(max-width:640px){button,select{width:100%;font-size:.95rem;}}
-</style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Layer — AI Processor</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-
 <header>
-<h1>AI Video Processor</h1>
-<p class="lead">Load a video, choose an effect, process, and download your edited video.</p>
+  <h1>Video Layer — AI Background Processor</h1>
+  <p class="lead">Load a video, select an effect, process, review, and download.</p>
 </header>
 
 <main>
-<section class="mediaBox">
-  <div class="mediaInner">
-    <input type="file" id="videoInput" accept="video/*">
-    <video id="inputVideo" playsinline controls></video>
-    <canvas id="processedCanvas"></canvas>
+  <section class="mediaBox">
+    <div class="mediaInner">
+      <label style="width:100%;">
+        <input id="videoInput" type="file" accept="video/*" />
+      </label>
+
+      <video id="inputVideo" playsinline controls></video>
+      <canvas id="outputCanvas"></canvas>
+    </div>
+  </section>
+
+  <section class="controls">
+    <select id="effectMode" class="aux">
+      <option value="remove">Background Removal</option>
+      <option value="blur">Background Blur</option>
+    </select>
+    <button id="processBtn">Process</button>
+    <button id="playBtn" disabled>Play Processed</button>
+    <button id="pauseBtn" disabled>Pause</button>
+    <button id="downloadBtn" disabled>Download</button>
+  </section>
+
+  <div class="progressWrap">
+    <div class="progress"><div id="progressFill"></div></div>
   </div>
-</section>
 
-<section class="controls">
-  <select id="effectSelect" class="aux">
-    <option value="remove">Background Removal</option>
-    <option value="blur">Background Blur</option>
-  </select>
-  <button id="processBtn">Process Video</button>
-  <button id="pauseBtn" disabled>Pause</button>
-  <button id="playBtn" disabled>Play</button>
-  <button id="downloadBtn" disabled>Download</button>
-</section>
-
-<div class="progressWrap">
-  <div class="progress"><div id="progressFill"></div></div>
-</div>
-
-<div id="status">Ready.</div>
+  <div id="status">Ready.</div>
 </main>
 
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
+<script src="detector.js"></script>
 <script>
 const videoInput = document.getElementById('videoInput');
 const inputVideo = document.getElementById('inputVideo');
-const canvas = document.getElementById('processedCanvas');
-const ctx = canvas.getContext('2d');
+const outCanvas = document.getElementById('outputCanvas');
+const outCtx = outCanvas.getContext('2d');
+
+const effectMode = document.getElementById('effectMode');
 const processBtn = document.getElementById('processBtn');
-const pauseBtn = document.getElementById('pauseBtn');
 const playBtn = document.getElementById('playBtn');
+const pauseBtn = document.getElementById('pauseBtn');
 const downloadBtn = document.getElementById('downloadBtn');
-const effectSelect = document.getElementById('effectSelect');
+
 const progressFill = document.getElementById('progressFill');
 const statusEl = document.getElementById('status');
 
-let seg, processing=false, recorder=null, recordedBlobs=[];
-let rafId=null;
+let worker = null;
+let processing = false;
+let frameQueue = [];
+let recordedBlobs = [];
+let recorder = null;
 
-// Load video
-videoInput.addEventListener('change', e=>{
-  const f = e.target.files[0];
-  if(!f) return;
-  inputVideo.src = URL.createObjectURL(f);
+// --- Video load ---
+videoInput.addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  inputVideo.src = URL.createObjectURL(file);
   inputVideo.load();
-  inputVideo.onloadeddata = ()=>{
-    canvas.width = inputVideo.videoWidth;
-    canvas.height = inputVideo.videoHeight;
-    statusEl.textContent = `Loaded: ${inputVideo.videoWidth}x${inputVideo.videoHeight}`;
-    processBtn.disabled = false;
+  inputVideo.onloadeddata = () => {
+    outCanvas.width = inputVideo.videoWidth;
+    outCanvas.height = inputVideo.videoHeight;
+    setStatus(`Loaded video: ${inputVideo.videoWidth}×${inputVideo.videoHeight}`);
   };
 });
 
-// Initialize MediaPipe Segmentation
-seg = new SelfieSegmentation({locateFile: f=>`https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`});
-seg.setOptions({modelSelection:1});
-seg.onResults(results=>{
-  const mask = results.segmentationMask;
-  if(!mask) return;
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  ctx.drawImage(inputVideo,0,0,canvas.width,canvas.height);
+// --- UI helpers ---
+function setStatus(s){ statusEl.textContent = s; }
+function setProgress(p){ progressFill.style.width = `${Math.max(0, Math.min(100, p))}%`; }
 
-  if(effectSelect.value==='remove'){
-    ctx.save();
-    ctx.globalCompositeOperation='destination-in';
-    ctx.drawImage(mask,0,0,canvas.width,canvas.height);
-    ctx.restore();
-  } else if(effectSelect.value==='blur'){
-    ctx.save();
-    ctx.filter='blur(12px)';
-    ctx.drawImage(inputVideo,0,0,canvas.width,canvas.height);
-    ctx.globalCompositeOperation='destination-in';
-    ctx.drawImage(mask,0,0,canvas.width,canvas.height);
-    ctx.restore();
-  }
+// --- Process button ---
+processBtn.addEventListener('click', () => {
+  if (!inputVideo.src) return setStatus('Please load a video first.');
+  startProcessing();
 });
 
-// Process video
-processBtn.addEventListener('click',async ()=>{
-  if(!inputVideo.src) return;
-  recordedBlobs=[];
-  const stream = canvas.captureStream(25);
-  recorder = new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp8'});
-  recorder.ondataavailable=ev=>{ if(ev.data && ev.data.size) recordedBlobs.push(ev.data); };
-  recorder.start(1000);
-  processing=true;
-  pauseBtn.disabled=false;
-  playBtn.disabled=false;
-  downloadBtn.disabled=true;
-  statusEl.textContent='Processing...';
-
-  inputVideo.currentTime=0;
-  await inputVideo.play().catch(()=>{});
-  processLoop();
+// --- Play/Pause ---
+playBtn.addEventListener('click', () => {
+  if (recorderBlobsURL) {
+    processedVideo.src = recorderBlobsURL;
+    processedVideo.play();
+  }
+});
+pauseBtn.addEventListener('click', () => {
+  if (processedVideo) processedVideo.pause();
 });
 
-// Live processing loop
-function processLoop(){
-  if(!processing) return;
-  if(!inputVideo.paused && !inputVideo.ended){
-    seg.send({image:inputVideo});
-  }
-  const pct = inputVideo.duration ? (inputVideo.currentTime/inputVideo.duration*100) : 0;
-  progressFill.style.width = `${Math.min(100,pct)}%`;
-  if(inputVideo.ended){
-    processing=false;
-    recorder.stop();
-    downloadBtn.disabled=false;
-    statusEl.textContent='Processing complete';
-    cancelAnimationFrame(rafId);
-    return;
-  }
-  rafId=requestAnimationFrame(processLoop);
+// --- Download ---
+downloadBtn.addEventListener('click', () => {
+  if (recordedBlobs.length === 0) return;
+  const blob = new Blob(recordedBlobs, { type: 'video/webm' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `processed_${Date.now()}.webm`;
+  a.click();
+});
+
+// --- Processing ---
+function startProcessing() {
+  processBtn.disabled = true;
+  setStatus('Initializing worker...');
+  
+  worker = new Worker('detector-worker.js');
+  worker.postMessage({ type: 'init' });
+  
+  worker.onmessage = e => {
+    const msg = e.data;
+    if (msg.type === 'log') setStatus(msg.msg);
+    else if (msg.type === 'mask') drawFrame(msg);
+    else if (msg.type === 'done') finishProcessing();
+  };
+
+  recordedBlobs = [];
+  const stream = outCanvas.captureStream(25);
+  recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+  recorder.ondataavailable = ev => { if (ev.data && ev.data.size) recordedBlobs.push(ev.data); };
+  recorder.start();
+
+  processing = true;
+  inputVideo.currentTime = 0;
+  inputVideo.play().catch(()=>{});
+  requestAnimationFrame(processLoop);
 }
 
-// Pause / Play
-pauseBtn.addEventListener('click',()=>{ inputVideo.pause(); });
-playBtn.addEventListener('click',()=>{ inputVideo.play(); processLoop(); });
+function processLoop() {
+  if (!processing) return;
 
-// Download
-downloadBtn.addEventListener('click',()=>{
-  if(recordedBlobs.length===0) return;
-  const blob = new Blob(recordedBlobs,{type:'video/webm'});
-  const url = URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url;
-  a.download=`processed_${Date.now()}.webm`;
-  a.click();
-  statusEl.textContent='Downloaded processed video';
-});
+  if (!inputVideo.paused && !inputVideo.ended) {
+    outCtx.drawImage(inputVideo, 0, 0, outCanvas.width, outCanvas.height);
+    const frame = outCtx.getImageData(0, 0, outCanvas.width, outCanvas.height);
+    worker.postMessage({ type: 'process', frame, mode: effectMode.value });
+  }
+
+  if (inputVideo.ended) {
+    processing = false;
+    worker.postMessage({ type: 'finish' });
+  } else {
+    requestAnimationFrame(processLoop);
+  }
+}
+
+function drawFrame({ maskData, width, height }) {
+  const imgData = new ImageData(new Uint8ClampedArray(maskData), width, height);
+  // smooth edges
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = width;
+  tempCanvas.height = height;
+  const tCtx = tempCanvas.getContext('2d');
+  tCtx.putImageData(imgData, 0, 0);
+
+  outCtx.save();
+  if (effectMode.value === 'remove') {
+    outCtx.globalCompositeOperation = 'destination-in';
+  } else {
+    outCtx.globalAlpha = 0.7;
+  }
+  outCtx.drawImage(tempCanvas, 0, 0, outCanvas.width, outCanvas.height);
+  outCtx.restore();
+}
+
+function finishProcessing() {
+  processing = false;
+  setStatus('Processing complete.');
+  recorder.stop();
+  playBtn.disabled = false;
+  pauseBtn.disabled = false;
+  downloadBtn.disabled = false;
+  processBtn.disabled = false;
+}
 </script>
 </body>
 </html>
