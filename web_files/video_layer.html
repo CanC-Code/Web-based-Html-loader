@@ -1,199 +1,177 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI Hybrid Video Processor</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Video Processor</title>
 <link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.min.js"></script>
 </head>
 <body>
-
 <header>
-<h1>Hybrid AI Video Processor</h1>
-<p class="lead">Load video → select effect → Process → Watch → Like/Dislike → Regenerate → Save at any time.</p>
+  <h1>AI Video Processor</h1>
+  <p class="lead">Automatic background removal, preview, feedback, and download.</p>
 </header>
 
 <main>
-<section class="mediaBox">
-  <div class="mediaInner">
-    <input type="file" id="videoInput" accept="video/*">
-    <video id="inputVideo" playsinline controls></video>
-    <canvas id="outputCanvas" aria-label="Processed output"></canvas>
+  <div class="mediaBox">
+    <div class="mediaInner">
+      <input type="file" id="videoInput" accept="video/*">
+      <video id="inputVideo" controls></video>
+      <canvas id="outputCanvas"></canvas>
+      <video id="previewVideo" controls style="display:none"></video>
+    </div>
   </div>
-</section>
 
-<section class="controls">
-  <select id="modeSelect" class="aux">
-    <option value="motion">Motion</option>
-    <option value="all">All Edges</option>
-    <option value="human">Humans Only</option>
-  </select>
-  <button id="processBtn">Process</button>
-  <button id="stopBtn" disabled>Stop</button>
-  <button id="likeBtn" disabled>Like Frame</button>
-  <button id="dislikeBtn" disabled>Dislike Frame</button>
-  <button id="regenerateBtn" disabled>Regenerate</button>
-  <button id="saveBtn" disabled>Save</button>
-</section>
+  <div class="controls">
+    <select id="modeSelect">
+      <option value="remove">Remove Background</option>
+      <option value="blur">Blur Background</option>
+    </select>
+    <button id="processBtn">Process</button>
+    <button id="likeBtn">👍 Like</button>
+    <button id="dislikeBtn">👎 Dislike</button>
+    <button id="regenerateBtn">Regenerate</button>
+    <button id="saveBtn">💾 Download</button>
+  </div>
 
-<div class="progressWrap">
-  <div class="progress"><div id="progressFill"></div></div>
-</div>
-
-<div id="status">Ready.</div>
+  <div class="progressWrap">
+    <div class="progress"><div></div></div>
+  </div>
+  <p id="status">Ready.</p>
 </main>
 
-<script src="detector.js"></script>
 <script>
-const videoInput=document.getElementById("videoInput");
-const inputVideo=document.getElementById("inputVideo");
-const outCanvas=document.getElementById("outputCanvas");
-const currentCtx=outCanvas.getContext("2d");
+const videoInput = document.getElementById("videoInput");
+const inputVideo = document.getElementById("inputVideo");
+const outputCanvas = document.getElementById("outputCanvas");
+const previewVideo = document.getElementById("previewVideo");
+const ctx = outputCanvas.getContext("2d");
+const processBtn = document.getElementById("processBtn");
+const saveBtn = document.getElementById("saveBtn");
+const likeBtn = document.getElementById("likeBtn");
+const dislikeBtn = document.getElementById("dislikeBtn");
+const regenerateBtn = document.getElementById("regenerateBtn");
+const progressBar = document.querySelector(".progress > div");
+const statusEl = document.getElementById("status");
+const modeSelect = document.getElementById("modeSelect");
 
-const modeSelect=document.getElementById("modeSelect");
-const processBtn=document.getElementById("processBtn");
-const stopBtn=document.getElementById("stopBtn");
-const likeBtn=document.getElementById("likeBtn");
-const dislikeBtn=document.getElementById("dislikeBtn");
-const regenerateBtn=document.getElementById("regenerateBtn");
-const saveBtn=document.getElementById("saveBtn");
+let segmentation = null;
+let processing = false;
+let recordedChunks = [];
+let recorder = null;
 
-const progressFill=document.getElementById("progressFill");
-const statusEl=document.getElementById("status");
-
-let processing=false;
-let recordedBlobs=[];
-let recorder=null;
-
-function setStatus(s){ statusEl.textContent=s; console.log("[video_layer]",s);}
-function setProgress(p){ progressFill.style.width=`${Math.max(0,Math.min(100,p))}%`; }
+function setStatus(msg){ statusEl.textContent = msg; }
+function setProgress(pct){ progressBar.style.width = pct + "%"; }
 
 videoInput.addEventListener("change", e=>{
-  const file=e.target.files[0];
+  const file = e.target.files[0];
   if(!file) return;
-  inputVideo.src=URL.createObjectURL(file);
+  const url = URL.createObjectURL(file);
+  inputVideo.src = url;
   inputVideo.load();
-  inputVideo.onloadeddata=()=>{
-    outCanvas.width=inputVideo.videoWidth;
-    outCanvas.height=inputVideo.videoHeight;
-    setStatus(`Video loaded: ${inputVideo.videoWidth}x${inputVideo.videoHeight}`);
-    processBtn.disabled=false;
-  };
+  setStatus("Video loaded, ready to process.");
 });
 
-processBtn.addEventListener("click", async ()=>{
-  if(!inputVideo.src){ setStatus("Load a video first"); return; }
-  processBtn.disabled=true;
-  stopBtn.disabled=false;
-  likeBtn.disabled=false;
-  dislikeBtn.disabled=false;
-  regenerateBtn.disabled=false;
-  saveBtn.disabled=true;
+function initSegmentation(){
+  segmentation = new SelfieSegmentation.SelfieSegmentation({locateFile:(f)=>
+    `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`
+  });
+  segmentation.setOptions({ modelSelection:1 });
+  segmentation.onResults(results=>{
+    if(!processing) return;
+    renderFrame(results);
+  });
+}
 
-  recordedBlobs=[];
-  try{
-    const stream=outCanvas.captureStream(30);
-    recorder=new MediaRecorder(stream,{mimeType:"video/webm;codecs=vp8"});
-    recorder.ondataavailable=ev=>{ if(ev.data && ev.data.size) recordedBlobs.push(ev.data); };
-    recorder.start(500);
-  }catch(err){ console.warn(err); recorder=null; }
-
-  processing=true;
-  inputVideo.currentTime=0;
-  await inputVideo.play().catch(()=>{});
-  setStatus("Processing...");
-
-  processLoop();
-});
-
-stopBtn.addEventListener("click", ()=>{
-  processing=false;
-  processBtn.disabled=false;
-  stopBtn.disabled=true;
-  likeBtn.disabled=true;
-  dislikeBtn.disabled=true;
-  regenerateBtn.disabled=true;
-  if(recorder && recorder.state==="recording") recorder.stop();
-  saveBtn.disabled=recordedBlobs.length===0;
-  setStatus("Processing stopped.");
-});
-
-likeBtn.addEventListener("click", ()=>{
-  if(maskHistory.length>0) sendFeedback(maskHistory[maskHistory.length-1],"like");
-});
-dislikeBtn.addEventListener("click", ()=>{
-  if(maskHistory.length>0) sendFeedback(maskHistory[maskHistory.length-1],"dislike");
-});
-
-regenerateBtn.addEventListener("click", ()=>{
-  if(!processing){
-    setStatus("Restarting processing for regeneration...");
-    inputVideo.currentTime=0;
-    recordedBlobs=[];
-    if(recorder && recorder.state==="recording") recorder.stop();
-    processBtn.click();
+function renderFrame(results){
+  const w = outputCanvas.width;
+  const h = outputCanvas.height;
+  ctx.save();
+  ctx.clearRect(0,0,w,h);
+  if(results.segmentationMask){
+    ctx.drawImage(results.segmentationMask,0,0,w,h);
+    ctx.globalCompositeOperation="source-in";
+    ctx.drawImage(inputVideo,0,0,w,h);
+    ctx.globalCompositeOperation="destination-over";
+    if(modeSelect.value==="blur"){
+      ctx.filter="blur(10px)";
+      ctx.drawImage(inputVideo,0,0,w,h);
+      ctx.filter="none";
+    } else {
+      ctx.fillStyle="#000";
+      ctx.fillRect(0,0,w,h);
+    }
   } else {
-    setStatus("Already processing...");
+    ctx.drawImage(inputVideo,0,0,w,h);
   }
-});
+  ctx.restore();
+}
+
+async function processVideo(){
+  if(!inputVideo.src){ setStatus("Load a video first."); return; }
+
+  processing = true;
+  setStatus("Processing video...");
+  recordedChunks=[];
+  outputCanvas.width = inputVideo.videoWidth;
+  outputCanvas.height = inputVideo.videoHeight;
+
+  // Recorder for processed output
+  const stream = outputCanvas.captureStream(30);
+  recorder = new MediaRecorder(stream,{mimeType:"video/webm"});
+  recorder.ondataavailable = e=>recordedChunks.push(e.data);
+  recorder.start();
+
+  inputVideo.play();
+
+  async function loop(){
+    if(!processing) return;
+    await segmentation.send({image:inputVideo});
+    const pct = (inputVideo.currentTime / inputVideo.duration) * 100;
+    setProgress(pct);
+    if(!inputVideo.paused && !inputVideo.ended) requestAnimationFrame(loop);
+    else finishProcess();
+  }
+  requestAnimationFrame(loop);
+}
+
+function finishProcess(){
+  processing = false;
+  setStatus("Processing complete, finalizing...");
+  recorder.stop();
+  recorder.onstop = ()=>{
+    const blob = new Blob(recordedChunks,{type:"video/webm"});
+    const url = URL.createObjectURL(blob);
+    previewVideo.src = url;
+    previewVideo.style.display="block";
+    previewVideo.load();
+    previewVideo.play();
+    setStatus("Preview ready — you can replay or download.");
+  };
+}
 
 saveBtn.addEventListener("click", ()=>{
-  if(recordedBlobs.length===0){ setStatus("Nothing recorded yet."); return; }
-  const blob=new Blob(recordedBlobs,{type:"video/webm"});
-  const url=URL.createObjectURL(blob);
+  if(recordedChunks.length===0){ setStatus("No video to save."); return; }
+  const blob = new Blob(recordedChunks,{type:"video/webm"});
+  const url = URL.createObjectURL(blob);
   const a=document.createElement("a");
   a.href=url;
   a.download=`processed_${Date.now()}.webm`;
   a.click();
-  setStatus("Saved processed video.");
+  setStatus("Video saved.");
 });
 
-let lastTimestamp=0;
-const targetMs=33; // ~30 FPS
-
-async function processLoop(timestamp){
-  if(!processing) return;
-
-  // Draw current frame
-  currentCtx.clearRect(0,0,outCanvas.width,outCanvas.height);
-  currentCtx.drawImage(inputVideo,0,0,outCanvas.width,outCanvas.height);
-
-  // Throttle frame processing
-  if(performance.now()-lastTimestamp>=targetMs && !pendingProcess){
-    lastTimestamp=performance.now();
-    try{
-      const frame=currentCtx.getImageData(0,0,outCanvas.width,outCanvas.height);
-      pendingProcess=true;
-      await processFrame(frame, modeSelect.value);
-      pendingProcess=false;
-    }catch(err){
-      console.error("Frame processing error:", err);
-      pendingProcess=false;
-    }
-  }
-
-  // Update progress
-  if(inputVideo.duration && !isNaN(inputVideo.duration) && inputVideo.duration>0){
-    const pct=Math.min(100,(inputVideo.currentTime/inputVideo.duration)*100);
-    setProgress(pct);
-  }
-
-  requestAnimationFrame(processLoop);
-}
-
-// Prevent accidental navigation
-window.addEventListener("beforeunload", (e)=>{
-  if(processing){
-    e.preventDefault();
-    e.returnValue='';
-  }
+likeBtn.addEventListener("click", ()=>setStatus("Feedback: 👍"));
+dislikeBtn.addEventListener("click", ()=>setStatus("Feedback: 👎"));
+regenerateBtn.addEventListener("click", ()=>{
+  setStatus("Regenerating new variant...");
+  processVideo();
 });
 
-// Safety: check detector
-if(typeof processFrame==="undefined"){
-  setStatus("Detector module not loaded.");
-  processBtn.disabled=true;
-}
+processBtn.addEventListener("click", processVideo);
+
+initSegmentation();
 </script>
 </body>
 </html>
