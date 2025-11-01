@@ -22,10 +22,9 @@
     <option value="objectExclude">Object Exclusion</option>
   </select>
   <button id="startBtn">Start Processing</button>
-  <button id="downloadBtn">Download Result</button>
+  <button id="downloadBtn">Download Processed Video</button>
 </div>
 
-<video id="sourceVideo" controls style="display:none"></video>
 <canvas id="outputCanvas"></canvas>
 <div id="status">Ready.</div>
 
@@ -34,11 +33,11 @@ const videoInput = document.getElementById('videoInput');
 const effectSelect = document.getElementById('effectSelect');
 const startBtn = document.getElementById('startBtn');
 const downloadBtn = document.getElementById('downloadBtn');
-const sourceVideo = document.getElementById('sourceVideo');
 const canvas = document.getElementById('outputCanvas');
 const ctx = canvas.getContext('2d');
 const status = document.getElementById('status');
 
+let sourceVideo = null;
 let processor = null;
 let mediaRecorder = null;
 let recordedChunks = [];
@@ -46,20 +45,19 @@ let recordedChunks = [];
 videoInput.addEventListener('change', e => {
   const file = e.target.files[0];
   if (!file) return;
+
+  if (!sourceVideo) sourceVideo = document.createElement('video');
   sourceVideo.src = URL.createObjectURL(file);
   sourceVideo.load();
-  sourceVideo.style.display = "block";
   sourceVideo.onloadedmetadata = () => {
     canvas.width = sourceVideo.videoWidth;
     canvas.height = sourceVideo.videoHeight;
-    canvas.style.width = '90%';
-    canvas.style.height = 'auto';
-  }
-  status.textContent = `Loaded video: ${file.name}`;
+    status.textContent = `Loaded video: ${file.name}`;
+  };
 });
 
 startBtn.addEventListener('click', async () => {
-  if (!sourceVideo.src) return alert("Load a video first!");
+  if (!sourceVideo) return alert("Please select a video first.");
   const effect = effectSelect.value;
 
   processor = new VideoProcessor(sourceVideo, canvas, effect);
@@ -68,7 +66,7 @@ startBtn.addEventListener('click', async () => {
   recordedChunks = [];
   const stream = canvas.captureStream(30);
   mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' });
-  mediaRecorder.ondataavailable = e => { if (e.data.size>0) recordedChunks.push(e.data); };
+  mediaRecorder.ondataavailable = e => { if(e.data.size > 0) recordedChunks.push(e.data); };
   mediaRecorder.start();
 
   processor.onFinish = () => {
@@ -81,7 +79,7 @@ startBtn.addEventListener('click', async () => {
 });
 
 downloadBtn.addEventListener('click', () => {
-  if (recordedChunks.length === 0) return alert("No processed video available!");
+  if (recordedChunks.length === 0) return alert("No processed video available yet.");
   const blob = new Blob(recordedChunks, { type: "video/webm" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
