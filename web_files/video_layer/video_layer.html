@@ -36,6 +36,7 @@ const startBtn = document.getElementById('startBtn');
 const downloadBtn = document.getElementById('downloadBtn');
 const sourceVideo = document.getElementById('sourceVideo');
 const canvas = document.getElementById('outputCanvas');
+const ctx = canvas.getContext('2d');
 const status = document.getElementById('status');
 
 let processor = null;
@@ -48,15 +49,18 @@ videoInput.addEventListener('change', e => {
   sourceVideo.src = URL.createObjectURL(file);
   sourceVideo.load();
   sourceVideo.style.display = "block";
+  sourceVideo.onloadedmetadata = () => {
+    canvas.width = sourceVideo.videoWidth;
+    canvas.height = sourceVideo.videoHeight;
+    canvas.style.width = '90%';
+    canvas.style.height = 'auto';
+  }
   status.textContent = `Loaded video: ${file.name}`;
 });
 
 startBtn.addEventListener('click', async () => {
   if (!sourceVideo.src) return alert("Load a video first!");
   const effect = effectSelect.value;
-
-  canvas.width = sourceVideo.videoWidth;
-  canvas.height = sourceVideo.videoHeight;
 
   processor = new VideoProcessor(sourceVideo, canvas, effect);
   await processor.init();
