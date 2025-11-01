@@ -1,117 +1,77 @@
-// detector.js — main thread handler
-const outCanvas = document.getElementById('outputCanvas');
-const outCtx = outCanvas.getContext('2d');
-const modeSelect = document.getElementById('modeSelect');
+// detector.js
+const VideoDetector = (() => {
+  let worker = null;
+  let canvas = document.getElementById('outputCanvas');
+  let ctx = canvas.getContext('2d');
+  let processing = false;
+  let mode = 'remove';
+  let recordedBlobs = [];
+  let recorder = null;
 
-let worker = null;
-let processing = false;
-let recordedBlobs = [];
-let recorder = null;
-let inputVideo = document.getElementById('inputVideo');
+  async function startProcessing(selectedMode='remove'){
+    if(!worker){
+      worker = new Worker('detector-worker.js');
+      worker.onmessage = (e)=>{
+        const { type, blob } = e.data;
+        if(type === 'ready') console.log('AI worker ready');
+        if(type === 'mask' && processing){
+          createImageBitmap(blob).then(img=>{
+            ctx.clearRect(0,0,canvas.width,canvas.height);
+            ctx.drawImage(img,0,0,canvas.width,canvas.height);
+          });
+        }
+      };
+      worker.postMessage({ type:'init', mode: selectedMode });
+    }
 
-// Initialize Worker
-async function initDetector() {
-  if (worker) worker.terminate(); // reset
-  worker = new Worker('detector-worker.js');
+    mode = selectedMode;
+    processing = true;
 
-  return new Promise((resolve, reject) => {
-    worker.onmessage = e => {
-      const { type } = e.data;
-      if (type === 'ready') {
-        console.log('[Detector] Worker ready');
-        resolve();
-      }
-      if (type === 'error') reject(e.data.message);
-    };
-    worker.postMessage({ type: 'init' });
-  });
-}
+    // Start recording processed canvas
+    recordedBlobs = [];
+    try{
+      const stream = canvas.captureStream(25);
+      recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+      recorder.ondataavailable = e => { if(e.data && e.data.size) recordedBlobs.push(e.data); };
+      recorder.start(1000);
+    } catch(e){ console.warn('Recording unavailable', e); recorder = null; }
 
-// Send a single frame for AI processing
-function processFrame(frame) {
-  if (!worker) return;
-  worker.postMessage({ type: 'process', frame, mode: modeSelect.value });
-}
-
-// Handle returned mask from worker
-worker?.onmessage = e => {
-  const { type, maskBitmap } = e.data;
-  if (type !== 'mask' || !maskBitmap) return;
-
-  // Clear canvas & draw input video frame first
-  outCtx.clearRect(0, 0, outCanvas.width, outCanvas.height);
-  outCtx.drawImage(inputVideo, 0, 0, outCanvas.width, outCanvas.height);
-
-  // Apply mask
-  outCtx.save();
-  if (modeSelect.value === 'remove') {
-    outCtx.globalCompositeOperation = 'destination-in';
-  } else if (modeSelect.value === 'blur') {
-    outCtx.globalAlpha = 0.5; // Example: overlay blurred mask
+    inputVideo.currentTime = 0;
+    await inputVideo.play().catch(()=>{});
+    processLoop();
   }
-  outCtx.drawImage(maskBitmap, 0, 0, outCanvas.width, outCanvas.height);
-  outCtx.restore();
-};
 
-// Start processing loop
-async function startProcessing() {
-  if (!inputVideo.src) return alert('Load a video first!');
-  await initDetector();
+  function stopProcessing(){
+    processing = false;
+    if(recorder && recorder.state === 'recording') recorder.stop();
+  }
 
-  recordedBlobs = [];
-  processing = true;
+  function playProcessed(){
+    if(recordedBlobs.length === 0) return;
+    const blob = new Blob(recordedBlobs, {type:'video/webm'});
+    const url = URL.createObjectURL(blob);
+    inputVideo.src = url;
+    inputVideo.play();
+  }
 
-  // Start MediaRecorder to save output
-  const stream = outCanvas.captureStream(30);
-  recorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp8' });
-  recorder.ondataavailable = e => { if (e.data.size) recordedBlobs.push(e.data); };
-  recorder.start(1000);
+  function downloadProcessed(){
+    if(recordedBlobs.length === 0) return;
+    const blob = new Blob(recordedBlobs, {type:'video/webm'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `processed_${Date.now()}.webm`;
+    a.click();
+  }
 
-  inputVideo.currentTime = 0;
-  await inputVideo.play();
+  async function processLoop(){
+    if(!processing) return;
+    const width = canvas.width;
+    const height = canvas.height;
+    ctx.drawImage(inputVideo,0,0,width,height);
+    const frame = ctx.getImageData(0,0,width,height);
+    worker.postMessage({ type:'process', frame, mode }, [frame.data.buffer]);
+    requestAnimationFrame(processLoop);
+  }
 
-  requestAnimationFrame(processLoop);
-}
-
-// Stop processing
-function stopProcessing() {
-  processing = false;
-  recorder?.stop();
-}
-
-// Replay processed video
-function playProcessed() {
-  if (recordedBlobs.length === 0) return alert('No processed video to play.');
-  const blob = new Blob(recordedBlobs, { type: 'video/webm' });
-  const url = URL.createObjectURL(blob);
-  inputVideo.src = url;
-  inputVideo.play();
-}
-
-// Download processed video
-function downloadProcessed() {
-  if (recordedBlobs.length === 0) return alert('Nothing recorded yet.');
-  const blob = new Blob(recordedBlobs, { type: 'video/webm' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `processed_${Date.now()}.webm`;
-  a.click();
-}
-
-// Processing loop — grabs frames from video and sends to worker
-function processLoop() {
-  if (!processing) return;
-
-  const frame = outCtx.getImageData(0, 0, outCanvas.width, outCanvas.height);
-  processFrame(frame);
-
-  requestAnimationFrame(processLoop);
-}
-
-// Export functions for HTML buttons
-window.VideoDetector = {
-  startProcessing,
-  stopProcessing,
-  playProcessed,
-  downloadProcessed
-};
+  return { startProcessing, stopProcessing, playProcessed, downloadProcessed };
+})();
