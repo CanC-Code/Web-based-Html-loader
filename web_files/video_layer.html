@@ -3,14 +3,17 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Hybrid AI Video Processor — Feedback & Regenerate</title>
+<title>Hybrid AI Video Processor — Worker + Feedback</title>
 <link rel="stylesheet" href="style.css" />
-<!-- MediaPipe Tasks Vision (used for segmentation) is loaded from CDN inside the module script -->
+<!-- MediaPipe Tasks Vision -->
+<script type="module">
+  // Nothing here — module will be imported inside main script below
+</script>
 </head>
 <body>
 <header>
   <h1>Hybrid AI Video Processor</h1>
-  <p class="lead">Automatic person/object cutout with interactive feedback & regeneration. Load a video, press Process, then Like/Dislike and Regenerate to refine. Preview and Download any time.</p>
+  <p class="lead">Worker-based processing, automatic exclusion (fans), multiple effects, feedback & regenerate. No persistence.</p>
 </header>
 
 <main>
@@ -18,20 +21,20 @@
     <div class="mediaInner">
       <input id="videoInput" type="file" accept="video/*">
       <video id="sourceVideo" controls playsinline></video>
-
-      <!-- Canvas shows the live processed frame during processing and also final display while recording -->
-      <canvas id="processingCanvas" aria-label="Processed output canvas"></canvas>
-
-      <!-- Replayable preview (hidden until processed blob ready) -->
+      <canvas id="displayCanvas" aria-label="Processed output"></canvas>
       <video id="previewVideo" controls style="display:none; width:100%; max-width:840px; border-radius:10px; background:#000;"></video>
     </div>
   </section>
 
   <section class="controls">
-    <select id="modeSelect" class="aux" title="Processing mode">
-      <option value="remove">Background Remove (cutout)</option>
-      <option value="blur">Background Blur</option>
+    <select id="effectSelect" class="aux" title="Effect">
+      <option value="remove">Remove Background (cutout)</option>
+      <option value="blur">Blur Background</option>
+      <option value="replaceColor">Replace Background Color</option>
+      <option value="desaturate">Desaturate Background</option>
     </select>
+
+    <input id="replaceColor" type="color" value="#0d1117" title="Background color" style="margin-left:6px;">
 
     <button id="processBtn">Process</button>
     <button id="regenerateBtn" disabled>Regenerate</button>
@@ -50,20 +53,11 @@
 </main>
 
 <script type="module">
-/*
-  Hybrid AI Video Processor
-  - Uses MediaPipe Tasks Vision ImageSegmenter for segmentation.
-  - Accumulates a floating-point mask across frames (accumMask) with swayAlpha.
-  - Like/Dislike modify accumMask (reinforce or remove areas).
-  - Regenerate re-processes the video using the refined accumMask stabilization.
-  - Creates a replayable preview (previewVideo) and allows downloading the final WebM.
-*/
-
 import { FilesetResolver, ImageSegmenter } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17";
 
 const videoInput = document.getElementById('videoInput');
 const sourceVideo = document.getElementById('sourceVideo');
-const canvas = document.getElementById('processingCanvas');
+const canvas = document.getElementById('displayCanvas');
 const ctx = canvas.getContext('2d');
 const previewVideo = document.getElementById('previewVideo');
 
@@ -72,41 +66,82 @@ const regenerateBtn = document.getElementById('regenerateBtn');
 const likeBtn = document.getElementById('likeBtn');
 const dislikeBtn = document.getElementById('dislikeBtn');
 const downloadBtn = document.getElementById('downloadBtn');
-const modeSelect = document.getElementById('modeSelect');
+const effectSelect = document.getElementById('effectSelect');
+const replaceColorInput = document.getElementById('replaceColor');
 const progressFill = document.getElementById('progressFill');
 const statusEl = document.getElementById('status');
 
+// worker script filename (must be in same folder)
+const WORKER_FILE = 'processor-worker.js';
+
 let segmenter = null;
-let accumMask = null;           // Float32Array width*height, values 0..1
+let worker = null;
 let maskWidth = 0, maskHeight = 0;
-let swayAlpha = 0.25;           // how quickly accumMask updates with new frame (0..1)
-let feedbackInfluence = 0.85;   // how strongly Like/Dislike updates accumMask
 let processing = false;
 let recordedChunks = [];
 let recorder = null;
 let processedBlob = null;
+let lastAlpha = null; // last alpha map Uint8Array
+let frameCount = 0;
+let totalFramesEstimate = 0;
+let targetFPS = 25;
 
-// Initialize MediaPipe ImageSegmenter (Tasks API)
+// initialize MediaPipe segmenter
 async function initSegmenter(){
   status('Loading segmentation model...');
   const filesetResolver = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17/wasm"
   );
   segmenter = await ImageSegmenter.createFromOptions(filesetResolver, {
-    baseOptions: {
-      modelAssetPath: "https://storage.googleapis.com/mediapipe-assets/selfie_segmenter_landscape.tflite"
-    },
+    baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-assets/selfie_segmenter_landscape.tflite" },
     outputCategoryMask: true
   });
-  status('Model ready.');
+  status('Segmentation model ready.');
+}
+
+// init worker
+function initWorker(){
+  if(worker) worker.terminate();
+  worker = new Worker(WORKER_FILE);
+  worker.onmessage = e => {
+    const d = e.data;
+    if(d.type === 'log') {
+      console.log('[worker]', d.msg);
+      return;
+    }
+    if(d.type === 'processedBitmap'){
+      // received processed ImageBitmap -> draw to canvas
+      const bitmap = d.bitmap;
+      // draw then close bitmap
+      (async ()=> {
+        // draw onto canvas
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+        ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        bitmap.close();
+      })();
+      // update progress if provided
+      if(typeof d.progress === 'number') setProgress(d.progress);
+      if(d.final === true){
+        // finalize: worker has finished processing run and posted final flag and may send blob via transferable? we record locally via MediaRecorder
+        status('Processing complete — preview ready.');
+        // stop recording after small delay
+        if(recorder && recorder.state === 'recording'){ setTimeout(()=> recorder.stop(), 300); }
+        regenerateBtn.disabled = false;
+        likeBtn.disabled = false;
+        dislikeBtn.disabled = false;
+        downloadBtn.disabled = false;
+      }
+    }
+    if(d.type === 'debug') console.log('[worker debug]', d.obj);
+  };
 }
 
 // UI helpers
-function status(s){ statusEl.textContent = s; console.log('[video_layer]', s); }
+function status(s){ statusEl.textContent = s; console.log('[ui]', s); }
 function setProgress(p){ progressFill.style.width = `${Math.max(0, Math.min(100, p))}%`; }
 
-// Load a local video
-videoInput.addEventListener('change', (e)=>{
+// on video select
+videoInput.addEventListener('change', e => {
   const file = e.target.files[0];
   if(!file) return;
   sourceVideo.src = URL.createObjectURL(file);
@@ -116,7 +151,10 @@ videoInput.addEventListener('change', (e)=>{
     canvas.height = sourceVideo.videoHeight;
     maskWidth = sourceVideo.videoWidth;
     maskHeight = sourceVideo.videoHeight;
-    status('Video loaded — ready to process. Choose a mode and click Process.');
+    // estimate frames
+    targetFPS = Math.min(30, Math.max(15, Math.round(1 / (sourceVideo.webkitDecodedFrameCount ? (1/30) : 1/25))));
+    totalFramesEstimate = Math.ceil((sourceVideo.duration || 0) * targetFPS);
+    status('Video loaded. Click Process to start. Model must be ready.');
     processBtn.disabled = false;
     previewVideo.style.display = 'none';
     previewVideo.src = '';
@@ -129,340 +167,164 @@ videoInput.addEventListener('change', (e)=>{
   };
 });
 
-// Utility: reset accumMask to undefined or zeros
-function resetAccumMask(){
-  accumMask = new Float32Array(maskWidth * maskHeight);
-  // initialize to 0 (no foreground) for better exclusion, but quickly updated by first frames
-  for(let i=0;i<accumMask.length;i++) accumMask[i] = 0;
-}
+// Prepare worker and recorder, then start processing loop (main thread segments each frame)
+// We send each raw frame ImageBitmap + alphaArray to worker for accumulation and effects
+async function startProcessing(){
+  if(!segmenter) { status('Model not loaded yet'); return; }
+  if(!sourceVideo.src) { status('Load a video first'); return; }
 
-// Convert Mask object (categoryMask) to Uint8Array alpha map 0..255
-async function maskToAlphaArray(categoryMask){
-  // categoryMask has getAsUint8Array() method returning RGBA-like values but typically uses single channel alpha
-  // We create a canvas and draw it, then read alpha.
-  const mc = categoryMask;
-  // categoryMask in Tasks API provides a method to convert to ImageData or to get bytes; but we will render to an offscreen canvas.
-  const tmp = new OffscreenCanvas(mc.width, mc.height);
-  const tctx = tmp.getContext('2d');
-  // create ImageData from mc.getAsUint8Array()
-  const arr = await mc.getAsUint8Array(); // this returns Uint8Array with values 0..255 per pixel (single byte)
-  // create RGBA image where R=G=B=255 and A = arr[p]
-  const img = new Uint8ClampedArray(mc.width * mc.height * 4);
-  for(let p=0;p<mc.width*mc.height;p++){
-    const off = p*4;
-    img[off] = 255;
-    img[off+1] = 255;
-    img[off+2] = 255;
-    img[off+3] = arr[p]; // alpha
-  }
-  const id = new ImageData(img, mc.width, mc.height);
-  tctx.putImageData(id, 0, 0);
-  // return the alpha array (0..255)
-  return arr; // Uint8Array length width*height
-}
+  initWorker();
 
-// Composite using accumMask (Float32 0..1) and current frame
-function compositeWithAccum(frameCanvas, accumMaskLocal, mode){
-  // frameCanvas is a canvas with current sourceVideo frame drawn full-size
-  // We'll draw into main canvas (processingCanvas)
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-
-  // If blur mode, draw blurred background first
-  if(mode === 'blur'){
-    // cheap blur by scaling down and back up
-    const tmp = document.createElement('canvas');
-    tmp.width = Math.max(2, Math.round(canvas.width / 12));
-    tmp.height = Math.max(2, Math.round(canvas.height / 12));
-    const tc = tmp.getContext('2d');
-    tc.drawImage(frameCanvas, 0, 0, tmp.width, tmp.height);
-    ctx.save();
-    ctx.filter = 'blur(10px)';
-    ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
-    ctx.restore();
-
-    // Now draw foreground using accumMask as alpha (destination-over style)
-    // We'll create mask canvas from accumMaskLocal scaled to canvas size
-    const maskCanvas = document.createElement('canvas');
-    maskCanvas.width = canvas.width;
-    maskCanvas.height = canvas.height;
-    const mcx = maskCanvas.getContext('2d');
-    const maskImgData = mcx.createImageData(maskWidth, maskHeight);
-    for(let i=0;i<maskWidth*maskHeight;i++){
-      const a = Math.max(0, Math.min(1, accumMaskLocal[i]));
-      const off = i*4;
-      maskImgData.data[off] = 255;
-      maskImgData.data[off+1] = 255;
-      maskImgData.data[off+2] = 255;
-      maskImgData.data[off+3] = Math.round(a * 255);
-    }
-    // draw mask scaled to canvas
-    mcx.putImageData(maskImgData, 0, 0);
-    // scale onto main canvas
-    ctx.globalCompositeOperation = 'destination-over';
-    // draw the source's foreground masked by mask: draw mask then draw source with source-in.
-    // Simpler: draw source, then use mask as destination-in to keep only foreground (like cutout)
-    // So first draw the source onto a temporary canvas and then apply mask.
-    const srcTmp = document.createElement('canvas');
-    srcTmp.width = canvas.width; srcTmp.height = canvas.height;
-    const sctx = srcTmp.getContext('2d');
-    sctx.drawImage(frameCanvas, 0, 0, canvas.width, canvas.height);
-    // apply mask
-    sctx.globalCompositeOperation = 'destination-in';
-    sctx.drawImage(maskCanvas, 0, 0, canvas.width, canvas.height);
-    // draw the result over the blurred background
-    ctx.drawImage(srcTmp, 0, 0, canvas.width, canvas.height);
-    ctx.globalCompositeOperation = 'source-over';
-  } else {
-    // Remove mode: show only foreground on transparent background (or on plain bg)
-    const maskCanvas = document.createElement('canvas');
-    maskCanvas.width = canvas.width;
-    maskCanvas.height = canvas.height;
-    const mcx = maskCanvas.getContext('2d');
-    const maskImgData = mcx.createImageData(maskWidth, maskHeight);
-    for(let i=0;i<maskWidth*maskHeight;i++){
-      const a = Math.max(0, Math.min(1, accumMaskLocal[i]));
-      const off = i*4;
-      maskImgData.data[off] = 255;
-      maskImgData.data[off+1] = 255;
-      maskImgData.data[off+2] = 255;
-      maskImgData.data[off+3] = Math.round(a * 255);
-    }
-    mcx.putImageData(maskImgData, 0, 0);
-
-    const srcTmp = document.createElement('canvas');
-    srcTmp.width = canvas.width; srcTmp.height = canvas.height;
-    const sctx = srcTmp.getContext('2d');
-    sctx.drawImage(frameCanvas, 0, 0, canvas.width, canvas.height);
-    sctx.globalCompositeOperation = 'destination-in';
-    sctx.drawImage(maskCanvas, 0, 0, canvas.width, canvas.height);
-
-    // clear main canvas and draw the srcTmp (foreground)
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    ctx.drawImage(srcTmp, 0, 0, canvas.width, canvas.height);
-  }
-}
-
-// Apply feedback mask (Uint8Array alpha values) as like/dislike to accumMask
-function applyFeedbackAlpha(alphaArr, kind){
-  // alphaArr length = maskWidth*maskHeight (0..255)
-  const n = accumMask.length;
-  if(alphaArr.length !== n) {
-    console.warn('feedback alpha size mismatch', alphaArr.length, n);
-    return;
-  }
-  if(kind === 'like'){
-    // reinforce: accum = clamp(accum * (1 - f) + 1 * f) where f = feedbackInfluence
-    for(let i=0;i<n;i++){
-      const a = alphaArr[i] / 255;
-      if(a > 0.2){
-        accumMask[i] = Math.min(1, (1 - feedbackInfluence) * accumMask[i] + feedbackInfluence * 1.0);
-      }
-    }
-  } else if(kind === 'dislike'){
-    // suppress: accum = accum * (1 - f) where a is mask area
-    for(let i=0;i<n;i++){
-      const a = alphaArr[i] / 255;
-      if(a > 0.2){
-        accumMask[i] = Math.max(0, accumMask[i] * (1 - feedbackInfluence));
-      }
-    }
-  }
-}
-
-// Process the video: play, capture each frame, segment, update accumMask, composite, and record via MediaRecorder
-async function processVideo(useAccumFromPrev = true){
-  if(!segmenter) {
-    status('Model not loaded yet. Please wait.');
-    return;
-  }
-  if(!sourceVideo.src) {
-    status('Load a video first.');
-    return;
-  }
-
-  // initialize accumMask on first run or if user requested reset
-  if(!accumMask || !useAccumFromPrev){
-    resetAccumMask();
-  }
-
-  // Prepare offscreen canvas to draw current frame and to pass to segmenter
-  const srcCanvas = new OffscreenCanvas(maskWidth, maskHeight);
-  const srcCtx = srcCanvas.getContext('2d');
-
+  // Start MediaRecorder on canvas stream to capture final processed video
   recordedChunks = [];
-  // prepare MediaRecorder for the processingCanvas stream
-  const stream = canvas.captureStream(30);
-  const options = { mimeType: 'video/webm;codecs=vp8' };
-  recorder = new MediaRecorder(stream, options);
-  recorder.ondataavailable = ev => { if(ev.data && ev.data.size) recordedChunks.push(ev.data); };
-  recorder.start(250);
-
-  // make sure preview hidden during processing
-  previewVideo.style.display = 'none';
-  processedBlob = null;
-  downloadBtn.disabled = true;
-  regenerateBtn.disabled = true;
-  likeBtn.disabled = true; dislikeBtn.disabled = true;
-
-  // ensure video is at start and playing
-  sourceVideo.currentTime = 0;
-  await sourceVideo.play().catch(()=>{ /* autoplay may be blocked; user can click play */ });
-
-  status('Processing — this may take a while depending on video length & CPU.');
-  processing = true;
-
-  // Use ImageCapture when available for better grabFrame, fallback to drawImage per RAF
-  let useImageCapture = false;
+  const stream = canvas.captureStream(targetFPS);
   try {
-    const track = sourceVideo.captureStream ? sourceVideo.captureStream().getVideoTracks()[0] : null;
-    if(track && typeof ImageCapture !== 'undefined') useImageCapture = true;
-  } catch(e){ useImageCapture = false; }
-
-  // choose frame rate target: attempt to follow source frame rate if present, otherwise 30
-  const targetFPS = 30;
-  const frameDuration = 1000 / targetFPS;
-
-  // Helper: get current frame as ImageBitmap
-  async function grabFrameBitmap(){
-    if(useImageCapture){
-      try {
-        const track = sourceVideo.captureStream().getVideoTracks()[0];
-        const ic = new ImageCapture(track);
-        const bmp = await ic.grabFrame();
-        return bmp;
-      } catch(e){
-        // fallback
-      }
-    }
-    // fallback: draw video into a temporary canvas and create ImageBitmap
-    srcCtx.drawImage(sourceVideo, 0, 0, srcCanvas.width, srcCanvas.height);
-    return srcCanvas.transferToImageBitmap();
+    recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+  } catch(e) {
+    // fallback without codec specified
+    recorder = new MediaRecorder(stream);
   }
-
-  // Frame loop: process until video ends
-  const totalFrames = Math.max(1, Math.floor(sourceVideo.duration * targetFPS));
-  let frameCount = 0;
-  const startTime = performance.now();
-
-  while(processing && !sourceVideo.ended){
-    const frameBitmap = await grabFrameBitmap();
-    // draw bitmap to srcCanvas
-    srcCtx.clearRect(0,0,srcCanvas.width,srcCanvas.height);
-    srcCtx.drawImage(frameBitmap, 0, 0, srcCanvas.width, srcCanvas.height);
-
-    // segmenter.segment expects ImageSource (canvas or ImageBitmap)
-    const segmentationResult = await segmenter.segment(srcCanvas);
-    const categoryMask = segmentationResult.categoryMask; // Image (mask) object
-    // convert to alpha array
-    const alphaArr = await maskToAlphaArray(categoryMask); // Uint8Array length width*height
-
-    // Convert alpha (Uint8) to normalized 0..1 current mask
-    const n = maskWidth * maskHeight;
-    // Update accumMask with sway: accum = (1 - swayAlpha) * accum + swayAlpha * current
-    for(let i=0;i<n;i++){
-      const cur = alphaArr[i] / 255;
-      accumMask[i] = (1 - swayAlpha) * accumMask[i] + swayAlpha * cur;
-    }
-
-    // composite and draw to onscreen canvas
-    // draw the current source into a temporary canvas sized to mask dimensions, then composite to main canvas
-    const tmpCanvas = document.createElement('canvas');
-    tmpCanvas.width = maskWidth; tmpCanvas.height = maskHeight;
-    const tmpCtx = tmpCanvas.getContext('2d');
-    tmpCtx.drawImage(frameBitmap, 0, 0, tmpCanvas.width, tmpCanvas.height);
-    compositeWithAccum(tmpCanvas, accumMask, modeSelect.value);
-
-    // clean up bitmap
-    frameBitmap.close();
-
-    frameCount++;
-    setProgress((frameCount / totalFrames) * 100);
-
-    // throttle: let browser breathe
-    await new Promise(r => setTimeout(r, 0));
-    // if sourceVideo is paused (user interaction) wait until it plays again or ended
-    if(sourceVideo.paused && !sourceVideo.ended) {
-      // wait a bit for user to resume; we will not stall the page
-      await new Promise(resolve => {
-        const onPlay = () => { sourceVideo.removeEventListener('play', onPlay); resolve(); };
-        sourceVideo.addEventListener('play', onPlay);
-      });
-    }
-  }
-
-  // finish up
-  processing = false;
-  // stop recorder after a short delay to ensure last frames get captured
-  await new Promise(r => setTimeout(r, 250));
-  if(recorder && recorder.state === 'recording') recorder.stop();
-
+  recorder.ondataavailable = ev => { if(ev.data && ev.data.size) recordedChunks.push(ev.data); };
   recorder.onstop = () => {
     processedBlob = new Blob(recordedChunks, { type: 'video/webm' });
     previewVideo.src = URL.createObjectURL(processedBlob);
     previewVideo.style.display = 'block';
     previewVideo.load();
     previewVideo.play().catch(()=>{});
-    status('Processing complete — preview ready. You may Like/Dislike, Regenerate, or Download.');
-    downloadBtn.disabled = false;
-    regenerateBtn.disabled = false;
-    likeBtn.disabled = false;
-    dislikeBtn.disabled = false;
+    status('Preview ready — you can replay and download.');
   };
+  recorder.start(250);
 
-  const elapsed = (performance.now() - startTime) / 1000;
-  console.log(`Processed ${frameCount} frames in ${elapsed.toFixed(2)}s`);
+  // begin processing run
+  processing = true;
+  frameCount = 0;
+  setProgress(0);
+  status('Processing started — running segmentation then worker processing.');
+
+  // ensure worker initialized
+  await new Promise(r => setTimeout(r, 50));
+
+  // frame-capture loop: we'll read video frames as ImageBitmap using drawImage approach
+  const off = new OffscreenCanvas(maskWidth, maskHeight);
+  const offCtx = off.getContext('2d');
+
+  // bring video to start
+  sourceVideo.currentTime = 0;
+  await sourceVideo.play().catch(()=>{}); // may need user gesture
+
+  // Use a loop driven by requestAnimationFrame; stop when video ends
+  async function tick(){
+    if(!processing) return;
+
+    // draw current frame to offscreen
+    offCtx.drawImage(sourceVideo, 0, 0, off.width, off.height);
+
+    // segmentation on offscreen: Task API accepts canvas as ImageSource
+    const result = await segmenter.segment(off); // synchronous-ish promise
+    const categoryMask = result.categoryMask;
+    const alphaArr = await categoryMask.getAsUint8Array(); // Uint8Array length w*h, values 0..255
+
+    lastAlpha = alphaArr; // store for feedback
+    // create ImageBitmap of the current frame to send to worker (transfer)
+    const bitmap = await createImageBitmap(off);
+
+    // prepare message
+    worker.postMessage({
+      type: 'processFrame',
+      frameBitmap: bitmap,
+      alpha: alphaArr.buffer,
+      w: maskWidth,
+      h: maskHeight,
+      effect: effectSelect.value,
+      replaceColor: replaceColorInput.value,
+      progress: Math.round((frameCount / Math.max(1, totalFramesEstimate)) * 100)
+    }, [bitmap, alphaArr.buffer]);
+
+    frameCount++;
+    setProgress(Math.min(100, (frameCount / Math.max(1, totalFramesEstimate)) * 100));
+
+    // advance video playback to next frame - we simply proceed while playing
+    if(!sourceVideo.paused && !sourceVideo.ended) {
+      // schedule next frame
+      requestAnimationFrame(tick);
+    } else if(sourceVideo.ended) {
+      // tell worker processing of run is finished so it can finalize if needed
+      worker.postMessage({ type: 'finalize' });
+      processing = false;
+    } else {
+      // if paused by user, wait for play
+      sourceVideo.addEventListener('play', () => {
+        requestAnimationFrame(tick);
+      }, { once: true });
+    }
+  }
+
+  requestAnimationFrame(tick);
 }
 
-// Like / Dislike handlers use last segmentation masks implicitly (they use current accumMask)
+// stop processing (user can regenerate or stop)
+function stopProcessing(){
+  processing = false;
+  status('Processing stopped by user.');
+  if(recorder && recorder.state === 'recording') recorder.stop();
+}
+
+// like/dislike: send the lastAlpha map (if present) to worker as feedback
 likeBtn.addEventListener('click', () => {
-  // create a pseudo-mask from current accumMask: areas with accum >= 0.4 considered selected
-  if(!accumMask) return;
-  const alpha = new Uint8Array(maskWidth * maskHeight);
-  for(let i=0;i<alpha.length;i++) alpha[i] = accumMask[i] >= 0.4 ? 255 : 0;
-  applyFeedbackAlpha(alpha, 'like');
-  status('Liked — feedback applied (reinforced).');
+  if(!lastAlpha) { status('No frame available to like.'); return; }
+  worker.postMessage({ type: 'feedback', kind: 'like', alpha: lastAlpha.buffer }, [lastAlpha.buffer]);
+  // lastAlpha.buffer transferred, make lastAlpha undefined
+  lastAlpha = null;
+  status('Liked this frame — feedback sent to worker.');
 });
 
 dislikeBtn.addEventListener('click', () => {
-  if(!accumMask) return;
-  const alpha = new Uint8Array(maskWidth * maskHeight);
-  for(let i=0;i<alpha.length;i++) alpha[i] = accumMask[i] >= 0.2 ? 255 : 0;
-  applyFeedbackAlpha(alpha, 'dislike');
-  status('Disliked — feedback applied (suppressed).');
+  if(!lastAlpha) { status('No frame available to dislike.'); return; }
+  worker.postMessage({ type: 'feedback', kind: 'dislike', alpha: lastAlpha.buffer }, [lastAlpha.buffer]);
+  lastAlpha = null;
+  status('Disliked this frame — feedback sent to worker.');
 });
 
-// Regenerate: re-run processing but keep accumMask (so feedback is used)
+// regenerate: tell worker to keep accumMask and run again (we re-run processing to create improved result)
 regenerateBtn.addEventListener('click', async () => {
   if(!sourceVideo.src) { status('Load a video first.'); return; }
-  status('Regenerating with refined mask...');
-  // stop any ongoing playback
-  if(!sourceVideo.paused) sourceVideo.pause();
-  // reprocess using accumMask
-  await processVideo(true);
+  // stop any current run
+  stopProcessing();
+  await new Promise(r => setTimeout(r, 200));
+  // worker should already have accumMask including feedback; we just re-run startProcessing
+  startProcessing();
+  status('Regeneration started — using accumulated feedback to refine output.');
 });
 
-// Download final processed blob
-downloadBtn.addEventListener('click', ()=>{
-  if(!processedBlob){ status('No processed result available.'); return; }
+// download final blob
+downloadBtn.addEventListener('click', () => {
+  if(!processedBlob) { status('No processed video available.'); return; }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(processedBlob);
   a.download = `processed_${Date.now()}.webm`;
   a.click();
-  status('Downloaded processed video.');
+  status('Download started.');
 });
 
-// Top-level initialization
-(async () => {
-  await initSegmenter();
-  // disable process until a video is loaded (videoInput handler will enable)
-  processBtn.disabled = true;
+// Process button
+processBtn.addEventListener('click', async () => {
+  // initialize segmenter and worker if required
+  if(!segmenter) {
+    await initSegmenter();
+  }
+  initWorker();
+  startProcessing();
+});
 
-  processBtn.addEventListener('click', async () => {
-    status('Starting processing run — this will process entire video and produce a preview.');
-    // reset recorded chunks and accumMask? keep previous accumMask if user wants refinement? We'll preserve accumMask if exists.
-    if(!accumMask) resetAccumMask();
-    await processVideo(true);
-  });
+// initialize segmentation model on load to minimize wait when user presses Process
+(async ()=> {
+  // warm model loading in background
+  try {
+    await initSegmenter();
+  } catch(err){
+    console.error('Model load failed', err);
+    status('Model load failed — check network / browser support.');
+  }
 })();
 
 </script>
