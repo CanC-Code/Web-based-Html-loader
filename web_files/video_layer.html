@@ -1,60 +1,293 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Video Layer — Worker-based MediaPipe Processor</title>
-<link rel="stylesheet" href="style.css" />
-</head>
-<body>
-<header>
-  <h1>Video Layer — Worker-based MediaPipe Processor</h1>
-  <p class="lead">MediaPipe segmentation (main thread) + worker accumulation/effects. Multi-file, robust, non-blocking.</p>
-</header>
+// main.js
+// Multi-file main script for video_layer.html
+// - Loads MediaPipe Tasks Vision ImageSegmenter (robust, with timeout / error handling)
+// - Captures frames and sends to processor-worker.js
+// - Receives UI events, handles MediaRecorder for the processed canvas
+// - Never crashes the UI; all heavy work offloaded to worker
 
-<main>
-  <section class="mediaBox">
-    <div class="mediaInner">
-      <input id="videoInput" type="file" accept="video/*">
-      <video id="sourceVideo" controls playsinline></video>
-      <canvas id="displayCanvas" aria-label="Processed output"></canvas>
-      <video id="previewVideo" controls style="display:none; width:100%; max-width:840px; border-radius:10px; background:#000;"></video>
-    </div>
-  </section>
+import { FilesetResolver, ImageSegmenter } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17";
 
-  <section class="controls">
-    <select id="modeSelect" class="aux" title="Segmentation mode">
-      <option value="person">Person (MediaPipe)</option>
-      <option value="motion">Motion (frame diff)</option>
-      <option value="hybrid">Hybrid (person + motion)</option>
-    </select>
+const videoInput = document.getElementById('videoInput');
+const sourceVideo = document.getElementById('sourceVideo');
+const canvas = document.getElementById('displayCanvas');
+const ctx = canvas.getContext('2d');
+const previewVideo = document.getElementById('previewVideo');
 
-    <select id="effectSelect" class="aux">
-      <option value="remove">Remove background</option>
-      <option value="blur">Blur background</option>
-      <option value="replaceColor">Replace background color</option>
-      <option value="desaturate">Desaturate background</option>
-      <option value="isolateColor">Isolate foreground color</option>
-    </select>
+const modeSelect = document.getElementById('modeSelect');
+const effectSelect = document.getElementById('effectSelect');
+const replaceColor = document.getElementById('replaceColor');
+const processBtn = document.getElementById('processBtn');
+const regenerateBtn = document.getElementById('regenerateBtn');
+const likeBtn = document.getElementById('likeBtn');
+const dislikeBtn = document.getElementById('dislikeBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const progressFill = document.getElementById('progressFill');
+const statusEl = document.getElementById('status');
 
-    <input id="replaceColor" type="color" value="#0d1117" title="Background color">
+const WORKER_FILE = 'processor-worker.js';
 
-    <button id="processBtn" disabled>Process</button>
-    <button id="regenerateBtn" disabled>Regenerate</button>
+let segmenter = null;
+let worker = null;
+let maskW = 0, maskH = 0;
+let lastAlpha = null;
+let recorder = null;
+let recordedChunks = [];
+let processedBlob = null;
+let processing = false;
+let estimatedTotalFrames = 0;
+const targetFPS = 25;
 
-    <button id="likeBtn" disabled>👍 Like</button>
-    <button id="dislikeBtn" disabled>👎 Dislike</button>
+// UI helpers
+function status(msg){ statusEl.textContent = msg; console.log('[main]', msg); }
+function setProgress(p){ progressFill.style.width = `${Math.max(0, Math.min(100, p))}%`; }
 
-    <button id="downloadBtn" disabled>💾 Download</button>
-  </section>
+// Robust model load with timeout and error handling
+async function initSegmenter(timeoutMs = 30000){
+  if(segmenter) return segmenter;
+  status('Loading MediaPipe ImageSegmenter (may take a few seconds)...');
+  try{
+    const filesetResolver = await Promise.race([
+      FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17/wasm"),
+      new Promise((_, rej) => setTimeout(()=> rej(new Error('FilesetResolver timeout')), timeoutMs))
+    ]);
+    segmenter = await Promise.race([
+      ImageSegmenter.createFromOptions(filesetResolver, {
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-assets/selfie_segmenter_landscape.tflite"
+        },
+        outputCategoryMask: true
+      }),
+      new Promise((_, rej) => setTimeout(()=> rej(new Error('ImageSegmenter creation timeout')), timeoutMs))
+    ]);
+    status('Model loaded — ready.');
+    processBtn.disabled = false;
+    return segmenter;
+  }catch(err){
+    console.error('Model init error', err);
+    status('Model load failed: ' + (err.message || err) + ' — check network and run from http(s) server.');
+    processBtn.disabled = true;
+    throw err;
+  }
+}
 
-  <div class="progressWrap">
-    <div class="progress"><div id="progressFill"></div></div>
-  </div>
+// Initialize worker and set message handler
+function initWorker(){
+  if(worker) worker.terminate();
+  worker = new Worker(WORKER_FILE);
+  worker.onmessage = (ev) => {
+    const d = ev.data;
+    if(d.type === 'log') { console.log('[worker]', d.msg); return; }
+    if(d.type === 'processed'){
+      // draw the transferred ImageBitmap
+      const bmp = d.bitmap;
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+      bmp.close();
+      if(typeof d.progress === 'number') setProgress(d.progress);
+      if(d.final){
+        if(recorder && recorder.state === 'recording') setTimeout(()=> recorder.stop(), 300);
+        status('Processing finished — preview ready.');
+        regenerateBtn.disabled = false;
+        likeBtn.disabled = false;
+        dislikeBtn.disabled = false;
+        downloadBtn.disabled = false;
+      }
+    }
+    if(d.type === 'error'){
+      console.error('Worker error:', d.err);
+      status('Worker error: ' + d.err);
+    }
+  };
+}
 
-  <div id="status">Initializing — loading model...</div>
-</main>
+// When user selects a video
+videoInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if(!file) return;
+  sourceVideo.src = URL.createObjectURL(file);
+  sourceVideo.load();
+  sourceVideo.onloadeddata = () => {
+    canvas.width = sourceVideo.videoWidth;
+    canvas.height = sourceVideo.videoHeight;
+    maskW = sourceVideo.videoWidth;
+    maskH = sourceVideo.videoHeight;
+    estimatedTotalFrames = Math.ceil((sourceVideo.duration || 0) * targetFPS) || 1;
+    status('Video loaded. Choose mode/effect and click Process.');
+    processBtn.disabled = false;
+    previewVideo.style.display = 'none';
+    previewVideo.src = '';
+    processedBlob = null;
+    downloadBtn.disabled = true;
+    regenerateBtn.disabled = true;
+    likeBtn.disabled = true;
+    dislikeBtn.disabled = true;
+    setProgress(0);
+  };
+});
 
-<script type="module" src="./main.js"></script>
-</body>
-</html>
+// capture and process frames: main captures and segments if needed, sends to worker
+async function startProcessing(reuseAccum = true){
+  processing = true;
+  recordedChunks = [];
+  processedBlob = null;
+  downloadBtn.disabled = true;
+  regenerateBtn.disabled = true;
+  likeBtn.disabled = true;
+  dislikeBtn.disabled = true;
+
+  initWorker();
+
+  // start MediaRecorder to capture processed canvas
+  const stream = canvas.captureStream(targetFPS);
+  try {
+    recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+  } catch(e) {
+    console.warn('MediaRecorder options not supported, fallback', e);
+    recorder = new MediaRecorder(stream);
+  }
+  recorder.ondataavailable = e => { if(e.data && e.data.size) recordedChunks.push(e.data); };
+  recorder.onstop = () => {
+    processedBlob = new Blob(recordedChunks, { type: 'video/webm' });
+    previewVideo.src = URL.createObjectURL(processedBlob);
+    previewVideo.style.display = 'block';
+    previewVideo.load();
+    previewVideo.play().catch(()=>{});
+    status('Preview ready.');
+  };
+  recorder.start(300);
+
+  // ensure segmenter loaded if person/hybrid mode
+  if((modeSelect.value === 'person' || modeSelect.value === 'hybrid') && !segmenter){
+    try {
+      await initSegmenter();
+    } catch(err){
+      processing = false;
+      recorder.stop();
+      return;
+    }
+  }
+
+  // ensure worker knows canvas size (send init)
+  worker.postMessage({ type: 'init', w: maskW, h: maskH });
+
+  // prep offscreen for capture
+  const off = new OffscreenCanvas(maskW, maskH);
+  const offCtx = off.getContext('2d');
+
+  // start at beginning
+  sourceVideo.currentTime = 0;
+  await sourceVideo.play().catch(()=>{ /* may require user gesture */ });
+
+  let frameCount = 0;
+
+  // choose frame capture schedule using RAF to keep UI responsive
+  async function tick(){
+    if(!processing) return;
+    offCtx.drawImage(sourceVideo, 0, 0, maskW, maskH);
+    let alphaBuffer = null;
+
+    try {
+      if(modeSelect.value === 'person' || modeSelect.value === 'hybrid'){
+        // run segmentation on off canvas
+        const res = await segmenter.segment(off);
+        const mask = res.categoryMask;
+        // get alpha bytes
+        const arr = await mask.getAsUint8Array(); // Uint8Array
+        alphaBuffer = arr.buffer; // transferable
+      } else {
+        // motion/hybrid: send null (worker can compute motion if it keeps previous frames)
+        alphaBuffer = null;
+      }
+    } catch(err){
+      console.error('Segmentation error (non-fatal):', err);
+      alphaBuffer = null;
+    }
+
+    // create ImageBitmap of frame and send to worker
+    try {
+      const bmp = await off.transferToImageBitmap();
+      // message payload
+      const msg = {
+        type: 'frame',
+        bitmap: bmp,
+        alpha: alphaBuffer, // may be null
+        effect: effectSelect.value,
+        replaceColor: replaceColor.value,
+        mode: modeSelect.value,
+        progress: Math.round((frameCount / Math.max(1, estimatedTotalFrames)) * 100)
+      };
+      // prepare transfers: always include bitmap; include alphaBuffer if present
+      const transfers = [bmp];
+      if(alphaBuffer) transfers.push(alphaBuffer);
+      worker.postMessage(msg, transfers);
+    } catch(err){
+      console.error('Failed to create/transfer ImageBitmap:', err);
+    }
+
+    frameCount++;
+    setProgress(Math.min(100, (frameCount / Math.max(1, estimatedTotalFrames)) * 100));
+
+    // scheduling: continue while playing
+    if(!sourceVideo.paused && !sourceVideo.ended){
+      requestAnimationFrame(tick);
+    } else if(sourceVideo.ended){
+      // signal finalize
+      worker.postMessage({ type: 'finalize' });
+      processing = false;
+    } else {
+      // paused — wait for play to resume
+      sourceVideo.addEventListener('play', () => { requestAnimationFrame(tick); }, { once: true });
+    }
+  }
+
+  requestAnimationFrame(tick);
+}
+
+// controls wiring
+processBtn.addEventListener('click', async () => {
+  processBtn.disabled = true;
+  try {
+    await initSegmenter(); // will be immediate if already loaded
+  } catch(e){
+    processBtn.disabled = false;
+    return;
+  }
+  startProcessing();
+});
+
+regenerateBtn.addEventListener('click', async () => {
+  if(!sourceVideo.src){ status('Load a video first.'); return; }
+  // stop any prior run
+  processing = false;
+  if(recorder && recorder.state === 'recording') recorder.stop();
+  await new Promise(r => setTimeout(r, 200));
+  // Keep worker accum mask and re-run
+  startProcessing(true);
+});
+
+likeBtn.addEventListener('click', () => {
+  if(!worker) return;
+  worker.postMessage({ type: 'feedback', kind: 'like' });
+  status('Liked -> feedback sent to worker.');
+});
+
+dislikeBtn.addEventListener('click', () => {
+  if(!worker) return;
+  worker.postMessage({ type: 'feedback', kind: 'dislike' });
+  status('Disliked -> feedback sent to worker.');
+});
+
+downloadBtn.addEventListener('click', () => {
+  if(!processedBlob){ status('No processed video available.'); return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(processedBlob);
+  a.download = `processed_${Date.now()}.webm`;
+  a.click();
+  status('Download started.');
+});
+
+// Initialize worker early (so it is ready)
+initWorker();
+
+// Start model loading in background
+initSegmenter().catch(()=>{ /* errors shown in UI */ });
