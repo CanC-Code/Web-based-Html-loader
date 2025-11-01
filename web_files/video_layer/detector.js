@@ -8,7 +8,6 @@ class VideoProcessor {
 
     this.detectorWorker = new Worker('detector-worker.js');
     this.processorWorker = new Worker('processor-worker.js');
-
     this.currentFrame = null;
 
     this.detectorWorker.onmessage = e => {
@@ -24,23 +23,19 @@ class VideoProcessor {
 
   async init() {
     return new Promise(resolve => {
-      this.detectorWorker.postMessage({ type: 'init' });
-      this.detectorWorker.onmessage = e => {
-        if (e.data.type === 'ready') resolve();
-      };
+      this.detectorWorker.postMessage({ type: 'init', width: this.canvas.width, height: this.canvas.height });
+      this.detectorWorker.onmessage = e => { if (e.data.type === 'ready') resolve(); };
     });
   }
 
   start() {
     this.running = true;
     this.video.play();
+    this.video.onended = () => { this.stop(); if (this.onFinish) this.onFinish(); };
     this.processLoop();
   }
 
-  stop() {
-    this.running = false;
-    this.video.pause();
-  }
+  stop() { this.running = false; this.video.pause(); }
 
   processLoop() {
     if (!this.running) return;

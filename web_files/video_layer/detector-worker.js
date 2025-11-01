@@ -1,9 +1,14 @@
 importScripts('https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js');
 
 let segmentation = null;
+let frameWidth = 0, frameHeight = 0;
 
-async function initSegmentation() {
-  segmentation = new SelfieSegmentation({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}` });
+async function initSegmentation(width, height) {
+  frameWidth = width;
+  frameHeight = height;
+  segmentation = new SelfieSegmentation({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
+  });
   segmentation.setOptions({ modelSelection: 1, selfieMode: true });
   segmentation.onResults(onResults);
   postMessage({ type: 'ready' });
@@ -11,19 +16,16 @@ async function initSegmentation() {
 
 function onResults(results) {
   const maskImage = results.segmentationMask;
-  const width = maskImage.width;
-  const height = maskImage.height;
-  const mask = new Uint8ClampedArray(width * height);
-
-  for (let i = 0; i < width * height; i++) mask[i] = maskImage.data[i] * 255;
-
+  const tmpCanvas = new OffscreenCanvas(maskImage.width, maskImage.height);
+  const tmpCtx = tmpCanvas.getContext('2d');
+  tmpCtx.drawImage(maskImage, 0, 0, frameWidth, frameHeight);
+  const imageData = tmpCtx.getImageData(0, 0, frameWidth, frameHeight);
+  const mask = new Uint8ClampedArray(frameWidth * frameHeight);
+  for (let i = 0; i < mask.length; i++) mask[i] = imageData.data[i*4];
   postMessage(mask, [mask.buffer]);
 }
 
 onmessage = async e => {
-  if (e.data.type === 'init') await initSegmentation();
-  else {
-    const frame = e.data;
-    createImageBitmap(frame).then(img => segmentation.send({ image: img }));
-  }
+  if (e.data.type === 'init') await initSegmentation(e.data.width, e.data.height);
+  else { createImageBitmap(e.data).then(img => segmentation.send({ image: img })); }
 };

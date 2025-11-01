@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI Video Layer Processor</title>
 <link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
+<script async src="https://docs.opencv.org/4.7.0/opencv.js"></script>
+<script src="detector.js"></script>
 </head>
 <body>
 
@@ -19,7 +22,6 @@
     <option value="objectExclude">Object Exclusion</option>
   </select>
   <button id="startBtn">Start Processing</button>
-  <button id="stopBtn">Stop</button>
   <button id="downloadBtn">Download Result</button>
 </div>
 
@@ -27,23 +29,19 @@
 <canvas id="outputCanvas"></canvas>
 <div id="status">Ready.</div>
 
-<script src="detector.js"></script>
 <script>
 const videoInput = document.getElementById('videoInput');
 const effectSelect = document.getElementById('effectSelect');
 const startBtn = document.getElementById('startBtn');
-const stopBtn = document.getElementById('stopBtn');
 const downloadBtn = document.getElementById('downloadBtn');
 const sourceVideo = document.getElementById('sourceVideo');
 const canvas = document.getElementById('outputCanvas');
-const ctx = canvas.getContext('2d');
 const status = document.getElementById('status');
 
-let videoProcessor = null;
+let processor = null;
 let mediaRecorder = null;
 let recordedChunks = [];
 
-// Load video
 videoInput.addEventListener('change', e => {
   const file = e.target.files[0];
   if (!file) return;
@@ -53,7 +51,6 @@ videoInput.addEventListener('change', e => {
   status.textContent = `Loaded video: ${file.name}`;
 });
 
-// Start processing
 startBtn.addEventListener('click', async () => {
   if (!sourceVideo.src) return alert("Load a video first!");
   const effect = effectSelect.value;
@@ -61,28 +58,24 @@ startBtn.addEventListener('click', async () => {
   canvas.width = sourceVideo.videoWidth;
   canvas.height = sourceVideo.videoHeight;
 
-  videoProcessor = new VideoProcessor(sourceVideo, canvas, effect);
-  await videoProcessor.init();
+  processor = new VideoProcessor(sourceVideo, canvas, effect);
+  await processor.init();
 
-  // Setup MediaRecorder
   recordedChunks = [];
   const stream = canvas.captureStream(30);
   mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' });
-  mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
+  mediaRecorder.ondataavailable = e => { if (e.data.size>0) recordedChunks.push(e.data); };
   mediaRecorder.start();
 
-  videoProcessor.start();
-  status.textContent = "Processing started.";
+  processor.onFinish = () => {
+    mediaRecorder.stop();
+    status.textContent = "Processing finished.";
+  };
+
+  processor.start();
+  status.textContent = "Processing started...";
 });
 
-// Stop
-stopBtn.addEventListener('click', () => {
-  if (videoProcessor) videoProcessor.stop();
-  if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
-  status.textContent = "Processing stopped.";
-});
-
-// Download
 downloadBtn.addEventListener('click', () => {
   if (recordedChunks.length === 0) return alert("No processed video available!");
   const blob = new Blob(recordedChunks, { type: "video/webm" });
