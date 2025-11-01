@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Hybrid AI Video Processor (MediaPipe + Worker)</title>
+<title>Video Layer — Worker-based MediaPipe Processor</title>
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 <header>
-  <h1>Hybrid AI Video Processor</h1>
-  <p class="lead">MediaPipe segmentation + worker-based accumulation, object exclusion, effects, feedback & regenerate. No persistence.</p>
+  <h1>Video Layer — Worker-based MediaPipe Processor</h1>
+  <p class="lead">MediaPipe segmentation (main thread) + worker accumulation/effects. Multi-file, robust, non-blocking.</p>
 </header>
 
 <main>
@@ -25,11 +25,11 @@
   <section class="controls">
     <select id="modeSelect" class="aux" title="Segmentation mode">
       <option value="person">Person (MediaPipe)</option>
-      <option value="motion">Motion (frame difference)</option>
+      <option value="motion">Motion (frame diff)</option>
       <option value="hybrid">Hybrid (person + motion)</option>
     </select>
 
-    <select id="effectSelect" class="aux" title="Effect">
+    <select id="effectSelect" class="aux">
       <option value="remove">Remove background</option>
       <option value="blur">Blur background</option>
       <option value="replaceColor">Replace background color</option>
@@ -37,8 +37,9 @@
       <option value="isolateColor">Isolate foreground color</option>
     </select>
 
-    <input id="replaceColor" type="color" value="#0d1117" title="Background color" style="margin-left:6px;">
-    <button id="processBtn">Process</button>
+    <input id="replaceColor" type="color" value="#0d1117" title="Background color">
+
+    <button id="processBtn" disabled>Process</button>
     <button id="regenerateBtn" disabled>Regenerate</button>
 
     <button id="likeBtn" disabled>👍 Like</button>
@@ -51,286 +52,9 @@
     <div class="progress"><div id="progressFill"></div></div>
   </div>
 
-  <div id="status">Loading MediaPipe model (this can take a few seconds)...</div>
+  <div id="status">Initializing — loading model...</div>
 </main>
 
-<script type="module">
-/* video_layer.html
-   - Loads MediaPipe Tasks Vision ImageSegmenter (person segmentation)
-   - Captures frames, requests segmentation (person) or uses motion if requested
-   - Sends ImageBitmap + alpha (UInt8) to worker for accumulation, exclusion, effects
-   - Worker returns processed ImageBitmap to draw on canvas
-   - Records canvas to create replayable preview + download
-*/
-
-import { FilesetResolver, ImageSegmenter } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17";
-
-const videoInput = document.getElementById('videoInput');
-const sourceVideo = document.getElementById('sourceVideo');
-const canvas = document.getElementById('displayCanvas');
-const ctx = canvas.getContext('2d');
-const previewVideo = document.getElementById('previewVideo');
-
-const modeSelect = document.getElementById('modeSelect');
-const effectSelect = document.getElementById('effectSelect');
-const replaceColor = document.getElementById('replaceColor');
-const processBtn = document.getElementById('processBtn');
-const regenerateBtn = document.getElementById('regenerateBtn');
-const likeBtn = document.getElementById('likeBtn');
-const dislikeBtn = document.getElementById('dislikeBtn');
-const downloadBtn = document.getElementById('downloadBtn');
-const progressFill = document.getElementById('progressFill');
-const statusEl = document.getElementById('status');
-
-// Worker file name (must be saved as processor-worker.js)
-const WORKER_FILE = 'processor-worker.js';
-
-let segmenter = null;
-let worker = null;
-let maskW = 0, maskH = 0;
-let lastAlpha = null; // Uint8Array alpha map for last frame
-let recordedChunks = [];
-let recorder = null;
-let processedBlob = null;
-let processing = false;
-let targetFPS = 25;
-let estimatedTotalFrames = 0;
-
-// UI helpers
-function status(s){ statusEl.textContent = s; console.log('[ui]', s); }
-function setProgress(p){ progressFill.style.width = `${Math.max(0, Math.min(100, p))}%`; }
-
-// Initialize MediaPipe ImageSegmenter (Tasks API)
-async function initSegmenter(){
-  status('Loading MediaPipe ImageSegmenter (this may take a few seconds)...');
-  try{
-    const filesetResolver = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17/wasm"
-    );
-    segmenter = await ImageSegmenter.createFromOptions(filesetResolver, {
-      baseOptions: {
-        modelAssetPath: "https://storage.googleapis.com/mediapipe-assets/selfie_segmenter_landscape.tflite"
-      },
-      outputCategoryMask: true
-    });
-    status('Model loaded — select a video and press Process.');
-  } catch(err){
-    console.error('Model load failed', err);
-    status('Model load failed. Check network or run from a web server (not file://).');
-  }
-}
-
-// Initialize worker — worker handles accumulative mask, exclusions, effects
-function initWorker(){
-  if(worker) worker.terminate();
-  worker = new Worker(WORKER_FILE);
-  worker.onmessage = (e) => {
-    const d = e.data;
-    if(d.type === 'log') {
-      console.log('[worker]', d.msg);
-      return;
-    }
-    if(d.type === 'processed'){
-      // draw provided ImageBitmap
-      const bmp = d.bitmap;
-      ctx.clearRect(0,0,canvas.width,canvas.height);
-      ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
-      bmp.close();
-      if(typeof d.progress === 'number') setProgress(d.progress);
-      if(d.final){
-        // worker signals final processed frame; stop recorder soon
-        if(recorder && recorder.state === 'recording') setTimeout(()=> recorder.stop(), 300);
-        status('Processing finished — preview ready.');
-        regenerateBtn.disabled = false;
-        likeBtn.disabled = false;
-        dislikeBtn.disabled = false;
-        downloadBtn.disabled = false;
-      }
-    }
-  };
-}
-
-// When user selects a video
-videoInput.addEventListener('change', e=>{
-  const file = e.target.files[0];
-  if(!file) return;
-  sourceVideo.src = URL.createObjectURL(file);
-  sourceVideo.load();
-  sourceVideo.onloadeddata = () => {
-    canvas.width = sourceVideo.videoWidth;
-    canvas.height = sourceVideo.videoHeight;
-    maskW = sourceVideo.videoWidth;
-    maskH = sourceVideo.videoHeight;
-    estimatedTotalFrames = Math.ceil((sourceVideo.duration || 0) * targetFPS);
-    status('Video loaded. Click Process to begin.');
-    processBtn.disabled = false;
-    previewVideo.style.display = 'none';
-    previewVideo.src = '';
-    processedBlob = null;
-    downloadBtn.disabled = true;
-    regenerateBtn.disabled = true;
-    likeBtn.disabled = true;
-    dislikeBtn.disabled = true;
-    setProgress(0);
-  };
-});
-
-// Processing loop: capture frames, segment (if person mode), send to worker
-async function startProcessing(useAccum = true){
-  if(!segmenter && modeSelect.value === 'person'){
-    status('Model not ready. Please wait a bit and try again.');
-    return;
-  }
-  initWorker();
-
-  // Prepare recorder for final canvas output
-  recordedChunks = [];
-  const stream = canvas.captureStream(targetFPS);
-  try {
-    recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
-  } catch(e) {
-    recorder = new MediaRecorder(stream);
-  }
-  recorder.ondataavailable = e => { if(e.data && e.data.size) recordedChunks.push(e.data); };
-  recorder.onstop = () => {
-    processedBlob = new Blob(recordedChunks, { type: 'video/webm' });
-    previewVideo.src = URL.createObjectURL(processedBlob);
-    previewVideo.style.display = 'block';
-    previewVideo.load();
-    previewVideo.play().catch(()=>{});
-    status('Preview ready — you can download or regenerate.');
-  };
-  recorder.start(300);
-
-  // ensure video at start
-  sourceVideo.currentTime = 0;
-  await sourceVideo.play().catch(()=>{}); // may require user gesture
-
-  processing = true;
-  let frameCount = 0;
-  const off = new OffscreenCanvas(maskW, maskH);
-  const offCtx = off.getContext('2d');
-
-  async function tick(){
-    if(!processing) return;
-
-    // draw video to offscreen (mask size)
-    offCtx.drawImage(sourceVideo, 0, 0, maskW, maskH);
-
-    // compute alpha map based on mode
-    let alphaArr = null; // Uint8Array length maskW*maskH
-
-    if(modeSelect.value === 'person'){
-      // MediaPipe segmentation
-      const res = await segmenter.segment(off);
-      const mask = res.categoryMask;
-      alphaArr = await mask.getAsUint8Array(); // 0..255 per pixel
-    } else if(modeSelect.value === 'motion'){
-      // send simple motion placeholder: we ask worker to compute motion internally if alpha not provided
-      // set alphaArr = null; worker will treat null as "compute motion" if configured
-      alphaArr = null;
-    } else if(modeSelect.value === 'hybrid'){
-      // produce person alpha and send; worker will combine with motion internally
-      const res = await segmenter.segment(off);
-      const mask = res.categoryMask;
-      alphaArr = await mask.getAsUint8Array();
-    }
-
-    // Create ImageBitmap of current frame to transfer
-    const bitmap = await createImageBitmap(off);
-
-    // Send to worker: transfer bitmap + alpha buffer (if present)
-    if(alphaArr){
-      worker.postMessage({
-        type: 'frame',
-        bitmap,
-        alpha: alphaArr.buffer,
-        w: maskW, h: maskH,
-        effect: effectSelect.value,
-        replaceColor: replaceColor.value,
-        mode: modeSelect.value,
-        progress: Math.round((frameCount / Math.max(1, estimatedTotalFrames)) * 100)
-      }, [bitmap, alphaArr.buffer]);
-      // alphaArr.buffer transferred; alphaArr becomes neutered — we don't need it afterwards
-    } else {
-      // send null alpha (worker will compute motion if configured)
-      worker.postMessage({
-        type: 'frame',
-        bitmap,
-        alpha: null,
-        w: maskW, h: maskH,
-        effect: effectSelect.value,
-        replaceColor: replaceColor.value,
-        mode: modeSelect.value,
-        progress: Math.round((frameCount / Math.max(1, estimatedTotalFrames)) * 100)
-      }, [bitmap]);
-    }
-
-    frameCount++;
-    setProgress(Math.min(100, (frameCount / Math.max(1, estimatedTotalFrames)) * 100));
-
-    // advance: continue while playing
-    if(!sourceVideo.paused && !sourceVideo.ended){
-      requestAnimationFrame(tick);
-    } else if(sourceVideo.ended){
-      // signal finalize to worker
-      worker.postMessage({ type: 'finalize' });
-      processing = false;
-    } else {
-      // paused: wait for play
-      sourceVideo.addEventListener('play', ()=>{ requestAnimationFrame(tick); }, { once:true });
-    }
-  }
-
-  requestAnimationFrame(tick);
-}
-
-// Like / Dislike send last known mask (the worker maintains accum masks; we tell worker to apply feedback on latest mask)
-likeBtn.addEventListener('click', ()=>{
-  worker && worker.postMessage({ type: 'feedback', kind: 'like' });
-  status('Sent Like feedback to worker.');
-});
-dislikeBtn.addEventListener('click', ()=>{
-  worker && worker.postMessage({ type: 'feedback', kind: 'dislike' });
-  status('Sent Dislike feedback to worker.');
-});
-
-// Regenerate instructs worker to keep accum state and we re-run processing (it will reuse accum mask)
-regenerateBtn.addEventListener('click', async ()=>{
-  if(!sourceVideo.src) { status('Load a video first.'); return; }
-  // stop any current run
-  processing = false;
-  if(recorder && recorder.state === 'recording') recorder.stop();
-  await new Promise(r => setTimeout(r, 200));
-  status('Regenerating using accumulated mask & feedback...');
-  startProcessing(true);
-});
-
-// Download
-downloadBtn.addEventListener('click', ()=>{
-  if(!processedBlob){ status('No processed video available yet.'); return; }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(processedBlob);
-  a.download = `processed_${Date.now()}.webm`;
-  a.click();
-  status('Download started.');
-});
-
-// Process button
-processBtn.addEventListener('click', async ()=>{
-  if(!segmenter && (modeSelect.value === 'person' || modeSelect.value === 'hybrid')){
-    status('Model not ready yet. Wait a moment and try again.');
-    return;
-  }
-  initWorker();
-  startProcessing();
-});
-
-// Initialize default
-processBtn.disabled = true;
-await initSegmenter();
-processBtn.disabled = false;
-
-</script>
+<script type="module" src="./main.js"></script>
 </body>
 </html>
