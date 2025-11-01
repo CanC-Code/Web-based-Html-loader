@@ -5,56 +5,120 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Local Program Loader</title>
 <style>
-  body { background:#0d1117; color:#c9d1d9; font-family:Arial,sans-serif; display:flex; flex-direction:column; align-items:center; padding:2em; }
-  h1 { color:#58a6ff; margin-bottom:1em; }
-  #fileList { margin:1em 0; background:#161b22; padding:1em; border-radius:10px; width:100%; max-width:600px; }
-  .file-item { padding:10px; border-bottom:1px solid #30363d; cursor:pointer; color:#c9d1d9; }
-  .file-item:hover { background:#21262d; }
-  iframe { width:100%; max-width:900px; height:75vh; border:2px solid #30363d; border-radius:12px; margin-top:1.5em; background:#000; }
-  #status { color:#8b949e; margin-top:1em; font-size:0.9rem; }
+  body {
+    background:#0d1117; color:#c9d1d9; font-family:Arial,sans-serif;
+    display:flex; flex-direction:column; align-items:center;
+    padding:2em; box-sizing:border-box;
+  }
+  h1 { color:#58a6ff; margin-bottom:1em; font-size:1.4rem; }
+  #folderList, #fileList {
+    margin:1em 0; background:#161b22; padding:1em;
+    border-radius:10px; width:100%; max-width:600px;
+  }
+  .folder-item, .file-item {
+    padding:10px; border-bottom:1px solid #30363d; cursor:pointer;
+    color:#c9d1d9; user-select:none;
+  }
+  .folder-item:hover, .file-item:hover { background:#21262d; }
+  .back { color:#58a6ff; cursor:pointer; margin-bottom:0.5em; display:inline-block; }
+  iframe {
+    width:100%; max-width:900px; height:75vh;
+    border:2px solid #30363d; border-radius:12px; margin-top:1.5em; background:#000;
+  }
+  #status { color:#8b949e; margin-top:1em; font-size:0.9rem; text-align:center; }
+
+  /* Local file loader button */
+  #localLoader {
+    background:#238636; color:#fff; font-weight:600;
+    border:none; border-radius:8px; padding:10px 16px;
+    cursor:pointer; margin-top:1em;
+  }
+  #localLoader:hover { background:#2ea043; }
+  #localFileInput { display:none; }
 </style>
 </head>
 <body>
 
 <h1>Local Program Loader</h1>
-<p>Select an HTML program from the <code>/web_files/</code> folder:</p>
+<p>Select a program from <code>/web_files/</code> or load your own HTML file:</p>
 
-<div id="fileList">Loading available programs...</div>
+<div id="folderList">Loading folders...</div>
+<div id="fileList" style="display:none;"></div>
+
+<button id="localLoader">📂 Load Local HTML File</button>
+<input type="file" id="localFileInput" accept=".html,.htm" />
 
 <iframe id="programFrame" sandbox="allow-same-origin allow-scripts"></iframe>
-
 <div id="status">Ready.</div>
 
 <script>
-// Define files manually (GitHub Pages cannot list directories)
-const availableFiles = [
-  "video_layer.html"
-];
+// -------------------- CONFIGURATION --------------------
+const folderStructure = {
+  "video_tools": ["video_layer.html", "video_editor.html"],
+  "image_tools": ["watermark_overlay.html", "image_cutout.html"],
+  "ai_experiments": ["ai_segmentation.html", "ai_refine.html"]
+};
 
+// -------------------- ELEMENTS --------------------
+const folderList = document.getElementById('folderList');
 const fileList = document.getElementById('fileList');
 const frame = document.getElementById('programFrame');
 const status = document.getElementById('status');
+const localLoader = document.getElementById('localLoader');
+const localFileInput = document.getElementById('localFileInput');
 
-function loadFileList(){
-  fileList.innerHTML = "";
-  if(availableFiles.length === 0){
-    fileList.innerHTML = "<p>No programs found in /web_files.</p>";
-    return;
-  }
-  availableFiles.forEach(name=>{
+// -------------------- FUNCTIONS --------------------
+function showFolders() {
+  fileList.style.display = "none";
+  folderList.style.display = "block";
+  folderList.innerHTML = "";
+
+  Object.keys(folderStructure).forEach(folder => {
+    const div = document.createElement('div');
+    div.className = "folder-item";
+    div.textContent = `📁 ${folder}`;
+    div.onclick = () => showFiles(folder);
+    folderList.appendChild(div);
+  });
+  status.textContent = "Folder list ready.";
+}
+
+function showFiles(folder) {
+  folderList.style.display = "none";
+  fileList.style.display = "block";
+  fileList.innerHTML = `<div class='back' onclick='showFolders()'>← Back to Folders</div>`;
+
+  folderStructure[folder].forEach(file => {
     const div = document.createElement('div');
     div.className = "file-item";
-    div.textContent = name;
-    div.onclick = ()=> {
-      frame.src = `web_files/${name}`;
-      status.textContent = `Loaded: ${name}`;
+    div.textContent = file;
+    div.onclick = () => {
+      frame.src = `web_files/${folder}/${file}`;
+      status.textContent = `Loaded: ${folder}/${file}`;
     };
     fileList.appendChild(div);
   });
-  status.textContent = "Program list ready.";
+  status.textContent = `Browsing folder: ${folder}`;
 }
 
-loadFileList();
+// -------------------- LOCAL FILE LOADER --------------------
+localLoader.addEventListener('click', () => localFileInput.click());
+
+localFileInput.addEventListener('change', (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const blob = new Blob([e.target.result], { type: "text/html" });
+    const blobURL = URL.createObjectURL(blob);
+    frame.src = blobURL;
+    status.textContent = `Loaded local file: ${file.name}`;
+  };
+  reader.readAsText(file);
+});
+
+// -------------------- INIT --------------------
+showFolders();
 </script>
 
 </body>
