@@ -1,46 +1,66 @@
-// detector.js — main thread interface
+// detector.js
 let Detector = {
   worker: null,
   ready: false,
+  maskCallback: null,
 
-  async init(opts={}){
-    return new Promise((resolve,reject)=>{
-      if(!window.Worker){
-        reject(new Error("Web Workers not supported"));
-        return;
-      }
-      if(this.worker) this.worker.terminate();
-      this.worker = new Worker('detector-worker.js');
-      this.worker.onmessage = e=>{
-        const {type,msg} = e.data;
-        if(type==='log') console.log('[Detector]',msg);
-        if(type==='ready') { this.ready=true; resolve(); }
-      };
-      this.worker.onerror = e=>reject(e);
-      this.worker.postMessage({ type:'init', options:opts });
-    });
-  },
+  async init({ mode="human" }={}) {
+    if (!window.Worker) throw new Error("Web Workers not supported");
+    if (this.worker) this.worker.terminate();
 
-  async processFrame(frame, opts={}){
-    return new Promise(resolve=>{
-      if(!this.ready) return resolve(null);
-      this.worker.onmessage = e=>{
-        if(e.data.type==='mask'){
-          const maskData = e.data.maskData;
-          const width = e.data.width;
-          const height = e.data.height;
-          resolve({ data:maskData, width, height });
+    this.worker = new Worker("detector-worker.js");
+    this.mode = mode;
+
+    return new Promise((resolve, reject) => {
+      this.worker.onmessage = e => {
+        const msg = e.data;
+        if (msg.type === "log") console.log("[detector]", msg.msg);
+        if (msg.type === "mask" && this.maskCallback) {
+          // create ImageData for canvas
+          let maskImg;
+          if (msg.maskData instanceof Uint8ClampedArray) {
+            maskImg = new ImageData(new Uint8ClampedArray(msg.maskData), msg.width, msg.height);
+          } else {
+            // MediaPipe returns HTMLImageElement/Canvas
+            maskImg = msg.maskData;
+          }
+          this.maskCallback(maskImg);
         }
+        if (!this.ready) { this.ready = true; resolve(); }
       };
-      this.worker.postMessage({ type:'process', frame, mode:opts.mode||'human' });
+      this.worker.onerror = err => reject(err);
     });
   },
 
-  applyMask(ctx, mask){
-    const imgData = new ImageData(new Uint8ClampedArray(mask.data), mask.width, mask.height);
-    ctx.save();
-    ctx.globalCompositeOperation='destination-in';
-    ctx.putImageData(imgData,0,0);
-    ctx.restore();
+  async processFrame(frame, options={}) {
+    if (!this.ready) throw new Error("Detector not ready");
+    return new Promise((resolve, reject) => {
+      this.maskCallback = mask => resolve(mask);
+      this.worker.postMessage({
+        type: "process",
+        frame: frame,
+        mode: options.mode || this.mode
+      });
+    });
+  },
+
+  applyMask(ctx, mask) {
+    if (!mask) return;
+    // mask can be ImageData or Canvas
+    if (mask instanceof ImageData) {
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-in";
+      const tempCanvas = document.createElement("canvas");
+      tempCanvas.width = mask.width; tempCanvas.height = mask.height;
+      tempCanvas.getContext("2d").putImageData(mask, 0, 0);
+      ctx.drawImage(tempCanvas, 0, 0, ctx.canvas.width, ctx.canvas.height);
+      ctx.restore();
+    } else {
+      // assume HTMLImageElement / Canvas
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-in";
+      ctx.drawImage(mask, 0, 0, ctx.canvas.width, ctx.canvas.height);
+      ctx.restore();
+    }
   }
 };
