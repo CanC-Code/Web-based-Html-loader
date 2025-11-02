@@ -10,35 +10,28 @@ body {margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9;
 h1 {font-size:1.3em; margin-bottom:0.5em;}
 video, canvas {width:100%; max-width:640px; border-radius:12px; background:black; margin-bottom:1em;}
 #controls {display:flex; flex-wrap:wrap; gap:0.5em; justify-content:center; margin-bottom:1em;}
-button,input[type=file],input[type=range] {
-  background:#238636;color:white;border:none;padding:0.6em 1em;border-radius:8px;font-size:1em;cursor:pointer;
-}
+button,input[type=file]{background:#238636;color:white;border:none;padding:0.6em 1em;border-radius:8px;font-size:1em;cursor:pointer;}
 button:disabled{background:#444c56;}
-#status{font-size:0.9em;opacity:0.8; margin-top:0.5em;}
-label{font-size:0.9em; margin-top:0.5em;}
+#status{font-size:0.9em;opacity:0.8;}
+label{font-size:0.9em; margin-top:0.5em; color:#c9d1d9;}
+input[type=range]{width:120px;}
 </style>
 </head>
 <body>
-<h1>AI Video Background Cutout</h1>
-
+<h1>AI Background Cutout</h1>
 <div id="controls">
   <input type="file" id="videoInput" accept="video/*">
   <button id="startBtn" disabled>Start</button>
   <button id="stopBtn" disabled>Stop</button>
   <button id="downloadBtn" disabled>Download</button>
-  <label>Feathering:
-    <input type="range" id="featherSlider" min="0" max="20" value="5">
-  </label>
+  <label>Feathering: <input type="range" id="featherSlider" min="0" max="20" value="5"></label>
 </div>
-
 <video id="video" playsinline controls></video>
 <canvas id="canvas"></canvas>
-<p id="status">Select a video to begin.</p>
+<p id="status">Waiting for video...</p>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
-<script type="module">
-import { startVideoProcessing } from './detector.js';
-
+<script>
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
@@ -49,37 +42,50 @@ const downloadBtn = document.getElementById('downloadBtn');
 const featherSlider = document.getElementById('featherSlider');
 const status = document.getElementById('status');
 
-let processedFrames = [];
-let recorder = null;
-let mediaStream = null;
+let seg=null, mask=null, worker=null, running=false;
+let mediaRecorder=null, recordedChunks=[];
+
+async function initSeg(){
+  seg = new SelfieSegmentation({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}` });
+  seg.setOptions({ modelSelection: 1 });
+  seg.onResults(r => { mask = r.segmentationMask; });
+  await seg.initialize();
+}
+initSeg();
 
 input.addEventListener('change', e => {
-  const f = e.target.files[0];
-  if(!f) return;
-  video.src = URL.createObjectURL(f);
+  const file = e.target.files[0];
+  if(!file) return;
+  video.src = URL.createObjectURL(file);
   video.load();
   video.onloadeddata = () => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     startBtn.disabled = false;
-    status.textContent = 'Video loaded. Click Start to process.';
+    status.textContent = 'Ready to process.';
   };
 });
 
-startBtn.onclick = async () => {
+startBtn.onclick = () => {
+  if(!seg){ status.textContent='Model loading...'; return; }
+  if(worker) worker.terminate();
+  worker = new Worker('detector-worker.js');
+  running = true;
   startBtn.disabled = true;
   stopBtn.disabled = false;
-  processedFrames = [];
-  status.textContent = 'Processing...';
+  downloadBtn.disabled = true;
+  recordedChunks = [];
 
-  // Setup MediaRecorder to capture canvas
-  mediaStream = canvas.captureStream(30); // 30 fps
-  recorder = new MediaRecorder(mediaStream);
-  const chunks = [];
-  recorder.ondataavailable = e => { if(e.data.size > 0) chunks.push(e.data); };
-  recorder.onstop = () => {
-    const blob = new Blob(chunks, { type:'video/webm' });
+  // MediaRecorder to capture processed canvas
+  const stream = canvas.captureStream(30);
+  mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+  mediaRecorder.ondataavailable = e => { if(e.data.size>0) recordedChunks.push(e.data); };
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(recordedChunks, { type:'video/webm' });
     const url = URL.createObjectURL(blob);
+    video.src = url;
+    video.controls = true;
+    video.play();
     downloadBtn.onclick = () => {
       const a = document.createElement('a');
       a.href = url;
@@ -87,24 +93,41 @@ startBtn.onclick = async () => {
       a.click();
     };
     downloadBtn.disabled = false;
-    video.src = url;
-    video.controls = true;
-    video.play();
     status.textContent = 'Processing complete. Play or download your video.';
   };
-  recorder.start();
+  mediaRecorder.start();
 
-  // Start worker-based processing
-  startVideoProcessing(video, canvas, ctx, frame => {
-    processedFrames.push(frame);
-  });
+  loop();
 };
 
 stopBtn.onclick = () => {
-  stopBtn.disabled = true;
-  recorder?.stop();
-  status.textContent = 'Processing stopped.';
+  running=false;
+  stopBtn.disabled=true;
+  mediaRecorder?.stop();
+  status.textContent='Stopped.';
 };
+
+function loop(){
+  if(!running) return;
+  if(video.paused || video.ended){
+    requestAnimationFrame(loop);
+    return;
+  }
+
+  seg.send({ image: video }).then(() => {
+    if(!mask) return requestAnimationFrame(loop);
+    const off = new OffscreenCanvas(canvas.width, canvas.height);
+    const octx = off.getContext('2d');
+    octx.drawImage(video,0,0,canvas.width,canvas.height);
+    octx.globalCompositeOperation='destination-in';
+    octx.drawImage(mask,0,0,canvas.width,canvas.height);
+
+    const frame = octx.getImageData(0,0,canvas.width,canvas.height);
+    worker.postMessage({ type:'blend', width: frame.width, height: frame.height, data: frame.data.buffer, feather: featherSlider.value }, [frame.data.buffer]);
+
+    requestAnimationFrame(loop);
+  });
+}
 </script>
 </body>
 </html>
