@@ -5,122 +5,90 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AI Video Cutout</title>
 <style>
-body {margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9;
-  display:flex; flex-direction:column; align-items:center; padding:1em;}
-h1 {font-size:1.3em; margin-bottom:0.5em;}
-video,canvas {width:100%; max-width:640px; border-radius:12px; background:black; margin-bottom:1em;}
-#controls {display:flex; flex-wrap:wrap; gap:0.5em; justify-content:center;}
+body {
+  margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9;
+  display:flex; flex-direction:column; align-items:center; padding:1em;
+}
+h1 {font-size:1.3em; margin-bottom:0.5em; text-align:center;}
+video, canvas {width:100%; max-width:640px; border-radius:12px; background:black; margin-bottom:1em;}
+#controls {display:flex; flex-wrap:wrap; gap:0.5em; justify-content:center; margin-bottom:1em;}
 button,input[type=file]{background:#238636;color:white;border:none;padding:0.6em 1em;border-radius:8px;font-size:1em;cursor:pointer;}
 button:disabled{background:#444c56;}
-#status{font-size:0.9em;opacity:0.8;}
+#status{font-size:0.9em;opacity:0.8; text-align:center;}
 </style>
 </head>
 <body>
+
 <h1>AI Background Cutout</h1>
 <div id="controls">
   <input type="file" id="videoInput" accept="video/*">
-  <button id="downloadBtn" disabled>Download</button>
+  <button id="downloadBtn" disabled>Download Processed Video</button>
 </div>
+
 <video id="video" playsinline controls></video>
 <canvas id="canvas"></canvas>
 <p id="status">Waiting for video...</p>
 
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
-<script>
-const video=document.getElementById('video');
-const canvas=document.getElementById('canvas');
-const ctx=canvas.getContext('2d');
-const input=document.getElementById('videoInput');
-const downloadBtn=document.getElementById('downloadBtn');
-const status=document.getElementById('status');
+<script type="module">
+import { startVideoProcessing } from './detector.js';
 
-let seg=null, mask=null, worker=null, frames=[];
-let processing=false;
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const input = document.getElementById('videoInput');
+const downloadBtn = document.getElementById('downloadBtn');
+const status = document.getElementById('status');
 
-// --- Initialize MediaPipe Segmentation ---
-async function initSeg(){
-  seg = new SelfieSegmentation({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`});
-  seg.setOptions({modelSelection:1});
-  seg.onResults(r=>{ mask=r.segmentationMask; });
-  await seg.initialize();
-  status.textContent='Model ready. Load video.';
-}
-initSeg();
+let processedFrames = [];
 
-// --- Video Load ---
-input.addEventListener('change',e=>{
-  const f=e.target.files[0]; if(!f)return;
-  video.src=URL.createObjectURL(f);
-  video.onloadeddata=()=>{
-    canvas.width=video.videoWidth;
-    canvas.height=video.videoHeight;
-    status.textContent='Video ready. Processing will start automatically.';
+input.addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  video.src = URL.createObjectURL(file);
+  video.onloadeddata = () => {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    status.textContent = 'Video loaded. Processing will start automatically.';
+    processedFrames = [];
     startProcessing();
   };
 });
 
-// --- Start Processing ---
-function startProcessing(){
-  if(!seg) { status.textContent='Models loading...'; return; }
-  if(worker) worker.terminate();
-  worker=new Worker('processor-worker.js');
-  frames=[];
-  processing=true;
-
-  worker.onmessage=e=>{
-    const msg=e.data;
-    if(msg.type==='frame'){
-      const img=new ImageData(new Uint8ClampedArray(msg.data),canvas.width,canvas.height);
-      ctx.putImageData(img,0,0);
-      frames.push(canvas.toDataURL('image/webp',0.8));
-    } else if(msg.type==='done'){
-      processing=false;
-      status.textContent='Processing complete.';
-      downloadBtn.disabled=false;
-    }
-  };
-
-  video.play().catch(()=>{});
-  renderLoop();
-}
-
-// --- Main Render Loop ---
-function renderLoop(){
-  if(!processing) return;
-  if(video.paused || video.ended){
-    finishProcessing();
-    return;
-  }
-  seg.send({image:video}).then(()=>{
-    if(mask){
-      const off=new OffscreenCanvas(canvas.width,canvas.height);
-      const octx=off.getContext('2d');
-      octx.drawImage(video,0,0,canvas.width,canvas.height);
-      octx.globalCompositeOperation='destination-in';
-      octx.drawImage(mask,0,0,canvas.width,canvas.height);
-      const frame=octx.getImageData(0,0,canvas.width,canvas.height);
-      worker.postMessage({type:'blend',width:frame.width,height:frame.height,data:frame.data.buffer},[frame.data.buffer]);
-    }
-    video.requestVideoFrameCallback(renderLoop);
+async function startProcessing() {
+  downloadBtn.disabled = true;
+  await startVideoProcessing(video, canvas, ctx, (frame) => {
+    // Capture frames for download
+    const dataURL = canvas.toDataURL('image/webp', 0.9);
+    processedFrames.push(dataURL);
   });
+
+  video.onended = () => {
+    status.textContent = 'Processing complete. Video ready for playback and download.';
+    downloadBtn.disabled = false;
+  };
 }
 
-// --- Finish Processing ---
-function finishProcessing(){
-  processing=false;
-  status.textContent='Video processing finished.';
-  downloadBtn.disabled=false;
-}
+downloadBtn.onclick = () => {
+  if (processedFrames.length === 0) return;
 
-// --- Download Video ---
-downloadBtn.onclick=()=>{
-  const blob=new Blob(frames.map(f=>atob(f.split(',')[1])).map(s=>Uint8Array.from(s,c=>c.charCodeAt(0))),{type:'video/webp'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url;
-  a.download='segmented_video.webp';
-  a.click();
+  // Convert frames to a single webm using Whammy.js or similar
+  // For simplicity, here is a basic WebP frames zip approach
+  const zip = new JSZip();
+  processedFrames.forEach((frame, i) => zip.file(`frame_${i}.webp`, frame.split(',')[1], {base64:true}));
+  zip.generateAsync({type:"blob"}).then(content=>{
+    const url = URL.createObjectURL(content);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'processed_frames.zip';
+    a.click();
+  });
 };
+
+// Load JSZip dynamically
+const script = document.createElement('script');
+script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+document.body.appendChild(script);
 </script>
 </body>
 </html>
