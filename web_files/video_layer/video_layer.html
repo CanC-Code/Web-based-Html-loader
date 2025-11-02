@@ -1,32 +1,126 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AI Video Cutout</title>
-<link rel="stylesheet" href="style.css">
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+<style>
+body {margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9;
+  display:flex; flex-direction:column; align-items:center; padding:1em;}
+h1 {font-size:1.3em; margin-bottom:0.5em;}
+video,canvas {width:100%; max-width:640px; border-radius:12px; background:black; margin-bottom:1em;}
+#controls {display:flex; flex-wrap:wrap; gap:0.5em; justify-content:center;}
+button,input[type=file]{background:#238636;color:white;border:none;padding:0.6em 1em;border-radius:8px;font-size:1em;cursor:pointer;}
+button:disabled{background:#444c56;}
+#status{font-size:0.9em;opacity:0.8;}
+</style>
 </head>
 <body>
-<h1>AI Video Background Cutout</h1>
-
+<h1>AI Background Cutout</h1>
 <div id="controls">
   <input type="file" id="videoInput" accept="video/*">
-  <button id="startBtn" disabled>Start</button>
-  <button id="stopBtn" disabled>Stop</button>
   <button id="downloadBtn" disabled>Download</button>
-  <label>Feather: <input type="range" id="featherSlider" min="0" max="20" value="5"></label>
 </div>
-
-<div id="videoContainer">
-  <video id="video" playsinline controls></video>
-  <canvas id="canvas"></canvas>
-</div>
-
+<video id="video" playsinline controls></video>
+<canvas id="canvas"></canvas>
 <p id="status">Waiting for video...</p>
 
-<script type="module" src="detector.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
+<script>
+const video=document.getElementById('video');
+const canvas=document.getElementById('canvas');
+const ctx=canvas.getContext('2d');
+const input=document.getElementById('videoInput');
+const downloadBtn=document.getElementById('downloadBtn');
+const status=document.getElementById('status');
+
+let seg=null, mask=null, worker=null, frames=[];
+let processing=false;
+
+// --- Initialize MediaPipe Segmentation ---
+async function initSeg(){
+  seg = new SelfieSegmentation({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`});
+  seg.setOptions({modelSelection:1});
+  seg.onResults(r=>{ mask=r.segmentationMask; });
+  await seg.initialize();
+  status.textContent='Model ready. Load video.';
+}
+initSeg();
+
+// --- Video Load ---
+input.addEventListener('change',e=>{
+  const f=e.target.files[0]; if(!f)return;
+  video.src=URL.createObjectURL(f);
+  video.onloadeddata=()=>{
+    canvas.width=video.videoWidth;
+    canvas.height=video.videoHeight;
+    status.textContent='Video ready. Processing will start automatically.';
+    startProcessing();
+  };
+});
+
+// --- Start Processing ---
+function startProcessing(){
+  if(!seg) { status.textContent='Models loading...'; return; }
+  if(worker) worker.terminate();
+  worker=new Worker('processor-worker.js');
+  frames=[];
+  processing=true;
+
+  worker.onmessage=e=>{
+    const msg=e.data;
+    if(msg.type==='frame'){
+      const img=new ImageData(new Uint8ClampedArray(msg.data),canvas.width,canvas.height);
+      ctx.putImageData(img,0,0);
+      frames.push(canvas.toDataURL('image/webp',0.8));
+    } else if(msg.type==='done'){
+      processing=false;
+      status.textContent='Processing complete.';
+      downloadBtn.disabled=false;
+    }
+  };
+
+  video.play().catch(()=>{});
+  renderLoop();
+}
+
+// --- Main Render Loop ---
+function renderLoop(){
+  if(!processing) return;
+  if(video.paused || video.ended){
+    finishProcessing();
+    return;
+  }
+  seg.send({image:video}).then(()=>{
+    if(mask){
+      const off=new OffscreenCanvas(canvas.width,canvas.height);
+      const octx=off.getContext('2d');
+      octx.drawImage(video,0,0,canvas.width,canvas.height);
+      octx.globalCompositeOperation='destination-in';
+      octx.drawImage(mask,0,0,canvas.width,canvas.height);
+      const frame=octx.getImageData(0,0,canvas.width,canvas.height);
+      worker.postMessage({type:'blend',width:frame.width,height:frame.height,data:frame.data.buffer},[frame.data.buffer]);
+    }
+    video.requestVideoFrameCallback(renderLoop);
+  });
+}
+
+// --- Finish Processing ---
+function finishProcessing(){
+  processing=false;
+  status.textContent='Video processing finished.';
+  downloadBtn.disabled=false;
+}
+
+// --- Download Video ---
+downloadBtn.onclick=()=>{
+  const blob=new Blob(frames.map(f=>atob(f.split(',')[1])).map(s=>Uint8Array.from(s,c=>c.charCodeAt(0))),{type:'video/webp'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download='segmented_video.webp';
+  a.click();
+};
+</script>
 </body>
 </html>
