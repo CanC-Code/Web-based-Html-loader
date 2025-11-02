@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AI Video Cutout</title>
+<title>AI Video Cutout Perfect</title>
 <style>
 body {margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9;
   display:flex; flex-direction:column; align-items:center; padding:1em;}
@@ -17,7 +17,7 @@ button:disabled{background:#444c56;}
 </head>
 <body>
 
-<h1>AI Video Cutout</h1>
+<h1>AI Video Cutout Perfect</h1>
 <div id="controls">
   <input type="file" id="videoInput" accept="video/*">
   <button id="startBtn" disabled>Start</button>
@@ -72,17 +72,18 @@ startBtn.onclick = () => {
 
   video.onended = async () => {
     detector.stop();
-    status.textContent = 'Processing finished. Generating playable video...';
+    status.textContent = 'Processing finished. Generating final video...';
+
     outputVideo = document.createElement('video');
     outputVideo.controls = true;
     outputVideo.width = canvas.width;
     outputVideo.src = await VideoDetector.framesToWebM(frames, canvas.width, canvas.height);
     canvas.after(outputVideo);
+
     downloadBtn.disabled = false;
     status.textContent = 'Ready. You can play or download the output.';
   };
 };
-
 downloadBtn.onclick = () => {
   if(!outputVideo) return;
   const a = document.createElement('a');
