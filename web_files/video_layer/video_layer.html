@@ -5,18 +5,35 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>AI Video Cutout</title>
 <style>
-body {margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9;
-  display:flex; flex-direction:column; align-items:center; padding:1em;}
+body {
+  margin:0;
+  font-family:Arial,sans-serif;
+  background:#0d1117;
+  color:#c9d1d9;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  padding:1em;
+}
 h1 {font-size:1.3em; margin-bottom:0.5em;}
 video,canvas {width:100%; max-width:640px; border-radius:12px; background:black; margin-bottom:1em;}
 #controls {display:flex; flex-wrap:wrap; gap:0.5em; justify-content:center;}
-button,input[type=file]{background:#238636;color:white;border:none;padding:0.6em 1em;border-radius:8px;font-size:1em;cursor:pointer;}
+button,input[type=file]{
+  background:#238636;
+  color:white;
+  border:none;
+  padding:0.6em 1em;
+  border-radius:8px;
+  font-size:1em;
+  cursor:pointer;
+}
 button:disabled{background:#444c56;}
 #status{font-size:0.9em;opacity:0.8;}
 </style>
 </head>
 <body>
-<h1>AI Background Cutout</h1>
+
+<h1>AI Video Cutout</h1>
 <div id="controls">
   <input type="file" id="videoInput" accept="video/*">
   <button id="startBtn" disabled>Start</button>
@@ -26,9 +43,7 @@ button:disabled{background:#444c56;}
 <canvas id="canvas"></canvas>
 <p id="status">Waiting for video...</p>
 
-<script type="module">
-import { VideoDetectorWorker } from './detector-worker.js';
-
+<script>
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
@@ -37,15 +52,15 @@ const startBtn = document.getElementById('startBtn');
 const downloadBtn = document.getElementById('downloadBtn');
 const status = document.getElementById('status');
 
-let workerDetector = null;
-let outputURL = null;
-let frameQueue = [];
+let worker = null;
+let frames = [];
+let processing = false;
+let offscreen = null;
 
 input.addEventListener('change', e => {
-  const f = e.target.files[0]; 
-  if (!f) return;
-
-  video.src = URL.createObjectURL(f);
+  const file = e.target.files[0];
+  if(!file) return;
+  video.src = URL.createObjectURL(file);
   video.onloadeddata = () => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -55,55 +70,85 @@ input.addEventListener('change', e => {
 });
 
 startBtn.onclick = () => {
-  if (!workerDetector) {
-    workerDetector = new VideoDetectorWorker(video, canvas, 5); // keep last 5 masks
-    status.textContent = 'Initializing model...';
-    workerDetector.init().then(() => {
-      status.textContent = 'Processing...';
-      startBtn.disabled = true;
-      video.play();
-      requestAnimationFrame(processFrameLoop);
-    });
-  }
+  if(worker) worker.terminate();
+  worker = new Worker('detector-worker.js');
+  frames = [];
+  processing = true;
+  startBtn.disabled = true;
+  downloadBtn.disabled = true;
+  status.textContent = 'Processing video...';
+  
+  // Initialize worker
+  worker.postMessage({type:'init', width:canvas.width, height:canvas.height});
+  
+  worker.onmessage = e => {
+    const msg = e.data;
+    if(msg.type === 'ready'){
+      playAndProcess();
+    } else if(msg.type === 'frame'){
+      const imgData = new ImageData(new Uint8ClampedArray(msg.data), canvas.width, canvas.height);
+      ctx.putImageData(imgData,0,0);
+      frames.push(imgData); // store for download
+    }
+  };
 };
 
-async function processFrameLoop() {
-  if(video.paused || video.ended) return;
-
-  const bitmap = await createImageBitmap(video);
-  workerDetector.enqueueFrame(bitmap);
-
-  const frameData = workerDetector.getProcessedFrame();
-  if(frameData){
-    ctx.putImageData(frameData,0,0);
-    frameQueue.push(frameData);
-  }
-
-  requestAnimationFrame(processFrameLoop);
+function playAndProcess(){
+  video.currentTime = 0;
+  video.play();
+  requestAnimationFrame(processLoop);
 }
 
-video.onended = async () => {
-  status.textContent = 'Encoding final video...';
-  outputURL = await workerDetector.finalizeVideo();
-  status.textContent = 'Processing complete! Play or download below.';
-
-  const finalVideo = document.createElement('video');
-  finalVideo.src = outputURL;
-  finalVideo.controls = true;
-  finalVideo.width = canvas.width;
-  finalVideo.height = canvas.height;
-
-  canvas.replaceWith(finalVideo);
-  downloadBtn.disabled = false;
-};
+function processLoop(){
+  if(video.paused || video.ended){
+    processing = false;
+    startBtn.disabled = false;
+    downloadBtn.disabled = true;
+    if(frames.length){
+      downloadBtn.disabled = false;
+      status.textContent = 'Processing complete. You can now play/download.';
+    } else {
+      status.textContent = 'Video ended.';
+    }
+    return;
+  }
+  // createImageBitmap for offloading to worker
+  createImageBitmap(video).then(bitmap=>{
+    worker.postMessage({type:'enqueue', bitmap:bitmap}, [bitmap]);
+    requestAnimationFrame(processLoop);
+  });
+}
 
 downloadBtn.onclick = () => {
-  if (!outputURL) return;
-  const a = document.createElement('a');
-  a.href = outputURL;
-  a.download = 'segmented_video.webm';
-  a.click();
+  if(frames.length === 0) return;
+  status.textContent = 'Encoding final video...';
+  const stream = canvas.captureStream();
+  const recorder = new MediaRecorder(stream, {mimeType:'video/webm; codecs=vp9'});
+  const chunks = [];
+  recorder.ondataavailable = e => chunks.push(e.data);
+  recorder.onstop = () => {
+    const blob = new Blob(chunks, {type:'video/webm'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'cutout_video.webm';
+    a.click();
+    status.textContent = 'Download ready.';
+  };
+  recorder.start();
+  let frameIndex = 0;
+  const drawNextFrame = () => {
+    if(frameIndex >= frames.length){
+      recorder.stop();
+      return;
+    }
+    ctx.putImageData(frames[frameIndex],0,0);
+    frameIndex++;
+    requestAnimationFrame(drawNextFrame);
+  };
+  drawNextFrame();
 };
 </script>
+
 </body>
 </html>
