@@ -8,8 +8,6 @@ export class VideoDetector {
     this.worker = null;
     this.running = false;
     this.onFrameCallback = null;
-    this.history = [];
-    this.FRAME_HISTORY = 3;
   }
 
   async init() {
@@ -59,58 +57,36 @@ export class VideoDetector {
       // Draw video
       octx.drawImage(this.video,0,0,this.canvas.width,this.canvas.height);
 
-      // Auto feather alpha based on mask
-      octx.globalAlpha = 1.0;
+      // Apply feathering / smoothing dynamically
+      octx.filter = 'blur(1px)'; 
       octx.globalCompositeOperation = 'destination-in';
       octx.drawImage(this.mask,0,0,this.canvas.width,this.canvas.height);
 
       const frameData = octx.getImageData(0,0,this.canvas.width,this.canvas.height);
 
-      // Store frame for temporal blending
-      this.history.push(frameData.data.slice());
-      if(this.history.length > this.FRAME_HISTORY) this.history.shift();
-
-      // Send blended frame to worker
-      const blendData = this._temporalBlend(frameData.data);
-      this.worker.postMessage({type:'blend',width:frameData.width,height:frameData.height,data:blendData.buffer},[blendData.buffer]);
+      // Send **current frame only** to worker
+      this.worker.postMessage({type:'blend',width:frameData.width,height:frameData.height,data:frameData.data.buffer},[frameData.data.buffer]);
 
       requestAnimationFrame(()=>this._loop());
     });
   }
 
-  _temporalBlend(current) {
-    const blended = new Uint8ClampedArray(current.length);
-    const historyFrames = [...this.history, current];
-    const count = historyFrames.length;
-
-    for(let i=0;i<current.length;i+=4){
-      let r=0,g=0,b=0,a=0;
-      historyFrames.forEach(f=>{
-        r+=f[i]; g+=f[i+1]; b+=f[i+2]; a+=f[i+3];
-      });
-      blended[i] = r/count; blended[i+1] = g/count;
-      blended[i+2] = b/count; blended[i+3] = a/count;
-    }
-    return blended;
-  }
-
   static async framesToWebM(frames,width,height){
     return new Promise(resolve=>{
-      const stream = new MediaStream();
-      const canvas = document.createElement('canvas');
-      canvas.width = width; canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      const track = canvas.captureStream().getVideoTracks()[0];
-      stream.addTrack(track);
-      const mediaRecorder = new MediaRecorder(stream,{mimeType:'video/webm'});
+      const streamCanvas = document.createElement('canvas');
+      streamCanvas.width = width;
+      streamCanvas.height = height;
+      const ctx = streamCanvas.getContext('2d');
+      const stream = streamCanvas.captureStream();
+      const recorder = new MediaRecorder(stream,{mimeType:'video/webm'});
       const chunks = [];
-      mediaRecorder.ondataavailable = e=>chunks.push(e.data);
-      mediaRecorder.onstop = ()=>resolve(URL.createObjectURL(new Blob(chunks,{type:'video/webm'})));
-      mediaRecorder.start();
+      recorder.ondataavailable = e=>chunks.push(e.data);
+      recorder.onstop = ()=>resolve(URL.createObjectURL(new Blob(chunks,{type:'video/webm'})));
+      recorder.start();
 
       let idx=0;
       function drawNext(){
-        if(idx>=frames.length){ mediaRecorder.stop(); return; }
+        if(idx>=frames.length){ recorder.stop(); return; }
         const img = new Image();
         img.onload=()=>{
           ctx.clearRect(0,0,width,height);
