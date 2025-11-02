@@ -1,48 +1,33 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI Video Cutout</title>
 <style>
-body {
-  margin:0;
-  font-family:Arial,sans-serif;
-  background:#0d1117;
-  color:#c9d1d9;
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  padding:1em;
-}
+body {margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9; display:flex; flex-direction:column; align-items:center; padding:1em;}
 h1 {font-size:1.3em; margin-bottom:0.5em;}
 video,canvas {width:100%; max-width:640px; border-radius:12px; background:black; margin-bottom:1em;}
 #controls {display:flex; flex-wrap:wrap; gap:0.5em; justify-content:center;}
-button,input[type=file]{
-  background:#238636;
-  color:white;
-  border:none;
-  padding:0.6em 1em;
-  border-radius:8px;
-  font-size:1em;
-  cursor:pointer;
-}
+button,input[type=file]{background:#238636;color:white;border:none;padding:0.6em 1em;border-radius:8px;font-size:1em;cursor:pointer;}
 button:disabled{background:#444c56;}
-#status{font-size:0.9em;opacity:0.8;}
+#status{font-size:0.9em;opacity:0.8; text-align:center;}
 </style>
 </head>
 <body>
 
-<h1>AI Video Cutout</h1>
+<h1>AI Background Cutout</h1>
 <div id="controls">
   <input type="file" id="videoInput" accept="video/*">
   <button id="startBtn" disabled>Start</button>
   <button id="downloadBtn" disabled>Download</button>
 </div>
+
 <video id="video" playsinline controls></video>
 <canvas id="canvas"></canvas>
 <p id="status">Waiting for video...</p>
 
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
 <script>
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
@@ -52,11 +37,23 @@ const startBtn = document.getElementById('startBtn');
 const downloadBtn = document.getElementById('downloadBtn');
 const status = document.getElementById('status');
 
-let worker = null;
-let frames = [];
-let processing = false;
-let offscreen = null;
+let seg=null, mask=null;
+let worker=null;
+let processing=false;
+let framesQueue = [];
+let finalVideoURL=null;
+let frameRate = 30; // will adjust based on video
 
+// Initialize Segmentation
+async function initSeg(){
+  seg = new SelfieSegmentation({locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`});
+  seg.setOptions({modelSelection:1});
+  seg.onResults(r => mask = r.segmentationMask);
+  await seg.initialize();
+}
+initSeg();
+
+// Video input
 input.addEventListener('change', e => {
   const file = e.target.files[0];
   if(!file) return;
@@ -64,91 +61,86 @@ input.addEventListener('change', e => {
   video.onloadeddata = () => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
+    frameRate = video.frameRate || 30;
     startBtn.disabled = false;
-    status.textContent = 'Ready to start processing.';
+    status.textContent = 'Ready to process.';
   };
 });
 
-startBtn.onclick = () => {
+// Start processing
+startBtn.onclick = async () => {
+  if(!seg){status.textContent='Model loading...'; return;}
   if(worker) worker.terminate();
-  worker = new Worker('detector-worker.js');
-  frames = [];
+  worker = new Worker('processor-worker.js');
+  framesQueue = [];
   processing = true;
+  finalVideoURL = null;
   startBtn.disabled = true;
   downloadBtn.disabled = true;
-  status.textContent = 'Processing video...';
-  
-  // Initialize worker
-  worker.postMessage({type:'init', width:canvas.width, height:canvas.height});
-  
+  status.textContent = 'Processing...';
+
   worker.onmessage = e => {
     const msg = e.data;
-    if(msg.type === 'ready'){
-      playAndProcess();
-    } else if(msg.type === 'frame'){
-      const imgData = new ImageData(new Uint8ClampedArray(msg.data), canvas.width, canvas.height);
-      ctx.putImageData(imgData,0,0);
-      frames.push(imgData); // store for download
+    if(msg.type === 'frame'){
+      const bitmap = msg.bitmap;
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      framesQueue.push(bitmap);
+    } else if(msg.type === 'done'){
+      processing = false;
+      status.textContent = 'Processing done. Video ready to play/download.';
+      createFinalVideo();
     }
   };
+
+  video.play();
+  processLoop();
 };
 
-function playAndProcess(){
-  video.currentTime = 0;
-  video.play();
+// Process loop
+async function processLoop(){
+  if(!processing) return;
+  if(video.paused || video.ended){
+    worker.postMessage({type:'finish'});
+    return;
+  }
+
+  const bitmap = await createImageBitmap(video);
+  await seg.send({image: video});
+  if(mask){
+    worker.postMessage({type:'frame', bitmap: bitmap, mask: mask}, [bitmap]);
+  }
   requestAnimationFrame(processLoop);
 }
 
-function processLoop(){
-  if(video.paused || video.ended){
-    processing = false;
-    startBtn.disabled = false;
-    downloadBtn.disabled = true;
-    if(frames.length){
-      downloadBtn.disabled = false;
-      status.textContent = 'Processing complete. You can now play/download.';
-    } else {
-      status.textContent = 'Video ended.';
-    }
-    return;
-  }
-  // createImageBitmap for offloading to worker
-  createImageBitmap(video).then(bitmap=>{
-    worker.postMessage({type:'enqueue', bitmap:bitmap}, [bitmap]);
-    requestAnimationFrame(processLoop);
-  });
-}
-
-downloadBtn.onclick = () => {
-  if(frames.length === 0) return;
-  status.textContent = 'Encoding final video...';
-  const stream = canvas.captureStream();
-  const recorder = new MediaRecorder(stream, {mimeType:'video/webm; codecs=vp9'});
+// Create final video
+async function createFinalVideo(){
+  if(framesQueue.length === 0) return;
+  const stream = canvas.captureStream(frameRate);
+  const recorder = new MediaRecorder(stream);
   const chunks = [];
   recorder.ondataavailable = e => chunks.push(e.data);
-  recorder.onstop = () => {
+  recorder.onstop = e => {
     const blob = new Blob(chunks, {type:'video/webm'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'cutout_video.webm';
-    a.click();
-    status.textContent = 'Download ready.';
+    finalVideoURL = URL.createObjectURL(blob);
+    video.src = finalVideoURL;
+    downloadBtn.disabled = false;
   };
   recorder.start();
-  let frameIndex = 0;
-  const drawNextFrame = () => {
-    if(frameIndex >= frames.length){
-      recorder.stop();
-      return;
-    }
-    ctx.putImageData(frames[frameIndex],0,0);
-    frameIndex++;
-    requestAnimationFrame(drawNextFrame);
-  };
-  drawNextFrame();
+  for(let i=0;i<framesQueue.length;i++){
+    ctx.drawImage(framesQueue[i], 0, 0, canvas.width, canvas.height);
+    await new Promise(r => setTimeout(r, 1000/frameRate));
+  }
+  recorder.stop();
+}
+
+// Download
+downloadBtn.onclick = () => {
+  if(!finalVideoURL) return;
+  const a = document.createElement('a');
+  a.href = finalVideoURL;
+  a.download = 'segmented_video.webm';
+  a.click();
 };
 </script>
-
 </body>
 </html>
