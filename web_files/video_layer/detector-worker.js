@@ -1,48 +1,96 @@
-importScripts('https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js');
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>AI Video Cutout</title>
+<style>
+body {margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9;
+  display:flex; flex-direction:column; align-items:center; padding:1em;}
+h1 {font-size:1.3em; margin-bottom:0.5em;}
+video,canvas {width:100%; max-width:640px; border-radius:12px; background:black; margin-bottom:1em;}
+#controls {display:flex; flex-wrap:wrap; gap:0.5em; justify-content:center;}
+button,input[type=file]{background:#238636;color:white;border:none;padding:0.6em 1em;border-radius:8px;font-size:1em;cursor:pointer;}
+button:disabled{background:#444c56;}
+#status{font-size:0.9em;opacity:0.8;}
+</style>
+</head>
+<body>
+<h1>AI Background Cutout</h1>
+<div id="controls">
+  <input type="file" id="videoInput" accept="video/*">
+  <button id="startBtn" disabled>Start</button>
+  <button id="downloadBtn" disabled>Download</button>
+</div>
+<video id="video" playsinline controls></video>
+<canvas id="canvas"></canvas>
+<p id="status">Waiting for video...</p>
 
-let seg = null;
-let canvasWidth = 0;
-let canvasHeight = 0;
-let frameQueue = [];
-let running = false;
+<script type="module">
+import { VideoDetectorWorker } from './detector-worker.js';
 
-self.onmessage = async (e) => {
-  const msg = e.data;
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const input = document.getElementById('videoInput');
+const startBtn = document.getElementById('startBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const status = document.getElementById('status');
 
-  if (msg.type === 'init') {
-    canvasWidth = msg.width;
-    canvasHeight = msg.height;
-    seg = new SelfieSegmentation({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}` });
-    seg.setOptions({ modelSelection: 1 });
-    await seg.initialize();
-    postMessage({ type: 'ready' });
-  }
+let workerDetector = null;
+let outputURL = null;
 
-  if (msg.type === 'frame') {
-    if (!running) running = true;
+input.addEventListener('change', e => {
+  const f = e.target.files[0]; 
+  if (!f) return;
 
-    // Convert ImageBitmap to canvas
-    const off = new OffscreenCanvas(canvasWidth, canvasHeight);
-    const ctx = off.getContext('2d');
-    ctx.drawImage(msg.bitmap, 0, 0, canvasWidth, canvasHeight);
+  video.src = URL.createObjectURL(f);
+  video.onloadeddata = () => {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    startBtn.disabled = false;
+    status.textContent = 'Ready to start processing.';
+  };
+});
 
-    await seg.send({ image: off });
-
-    const mask = seg.segmentationMask;
-    if (mask) {
-      ctx.globalCompositeOperation = 'destination-in';
-      ctx.filter = 'blur(1px)'; // Feathering
-      ctx.drawImage(mask, 0, 0, canvasWidth, canvasHeight);
-    }
-
-    const frame = ctx.getImageData(0, 0, canvasWidth, canvasHeight);
-    frameQueue.push(frame);
-
-    postMessage({ type: 'frame', data: frame.data.buffer }, [frame.data.buffer]);
-  }
-
-  if (msg.type === 'stop') {
-    running = false;
-    postMessage({ type: 'done', frames: frameQueue });
+startBtn.onclick = () => {
+  if (!workerDetector) {
+    workerDetector = new VideoDetectorWorker(video, canvas, 5); // keep last 5 masks
+    status.textContent = 'Initializing model...';
+    workerDetector.init().then(() => {
+      status.textContent = 'Processing...';
+      startBtn.disabled = true;
+      video.play();
+      workerDetector.start();
+    });
   }
 };
+
+video.onended = async () => {
+  if (workerDetector) {
+    await workerDetector.stop();
+    status.textContent = 'Encoding final video...';
+    outputURL = await workerDetector.getVideo();
+    status.textContent = 'Processing complete! You can play or download the video.';
+
+    const finalVideo = document.createElement('video');
+    finalVideo.src = outputURL;
+    finalVideo.controls = true;
+    finalVideo.width = canvas.width;
+    finalVideo.height = canvas.height;
+
+    canvas.replaceWith(finalVideo);
+    downloadBtn.disabled = false;
+  }
+};
+
+downloadBtn.onclick = () => {
+  if (!outputURL) return;
+  const a = document.createElement('a');
+  a.href = outputURL;
+  a.download = 'segmented_video.webm';
+  a.click();
+};
+</script>
+</body>
+</html>
