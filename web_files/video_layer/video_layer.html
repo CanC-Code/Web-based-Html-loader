@@ -1,9 +1,9 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AI Video Cutout Perfect</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>AI Video Cutout</title>
 <style>
 body {margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9;
   display:flex; flex-direction:column; align-items:center; padding:1em;}
@@ -16,79 +16,79 @@ button:disabled{background:#444c56;}
 </style>
 </head>
 <body>
-
-<h1>AI Video Cutout Perfect</h1>
+<h1>AI Background Cutout</h1>
 <div id="controls">
   <input type="file" id="videoInput" accept="video/*">
   <button id="startBtn" disabled>Start</button>
   <button id="downloadBtn" disabled>Download</button>
 </div>
-
 <video id="video" playsinline controls></video>
 <canvas id="canvas"></canvas>
 <p id="status">Waiting for video...</p>
 
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
 <script type="module">
-import { VideoDetector } from './detector.js';
+import { VideoDetectorWorker } from './detector-worker.js';
 
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
-const videoInput = document.getElementById('videoInput');
+const ctx = canvas.getContext('2d');
+const input = document.getElementById('videoInput');
 const startBtn = document.getElementById('startBtn');
 const downloadBtn = document.getElementById('downloadBtn');
 const status = document.getElementById('status');
 
-let detector = null;
-let frames = [];
-let outputVideo = null;
+let workerDetector = null;
+let outputURL = null;
 
-videoInput.addEventListener('change', async e => {
-  const file = e.target.files[0];
-  if(!file) return;
+input.addEventListener('change', e => {
+  const f = e.target.files[0]; 
+  if (!f) return;
 
-  video.src = URL.createObjectURL(file);
-  video.onloadeddata = async () => {
+  video.src = URL.createObjectURL(f);
+  video.onloadeddata = () => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     startBtn.disabled = false;
-    status.textContent = 'Ready to process.';
-    detector = new VideoDetector(video, canvas);
-    await detector.init();
+    status.textContent = 'Ready to start processing.';
   };
 });
 
 startBtn.onclick = () => {
-  if(!detector){status.textContent='Model not ready.'; return;}
-  frames = [];
-  status.textContent = 'Processing...';
-  downloadBtn.disabled = true;
-
-  detector.onFrameCallback = (imgData) => {
-    frames.push(canvas.toDataURL('image/webp',0.95));
-  };
-
-  detector.start();
-
-  video.onended = async () => {
-    detector.stop();
-    status.textContent = 'Processing finished. Generating final video...';
-
-    outputVideo = document.createElement('video');
-    outputVideo.controls = true;
-    outputVideo.width = canvas.width;
-    outputVideo.src = await VideoDetector.framesToWebM(frames, canvas.width, canvas.height);
-    canvas.after(outputVideo);
-
-    downloadBtn.disabled = false;
-    status.textContent = 'Ready. You can play or download the output.';
-  };
+  if (!workerDetector) {
+    workerDetector = new VideoDetectorWorker(video, canvas);
+    status.textContent = 'Initializing model...';
+    workerDetector.init().then(() => {
+      status.textContent = 'Processing...';
+      startBtn.disabled = true;
+      video.play();
+      workerDetector.start();
+    });
+  }
 };
+
+video.onended = async () => {
+  if (workerDetector) {
+    await workerDetector.stop();
+    status.textContent = 'Encoding final video...';
+    outputURL = await workerDetector.getVideo();
+    status.textContent = 'Processing complete! You can play or download the video.';
+    
+    const finalVideo = document.createElement('video');
+    finalVideo.src = outputURL;
+    finalVideo.controls = true;
+    finalVideo.width = canvas.width;
+    finalVideo.height = canvas.height;
+
+    canvas.replaceWith(finalVideo);
+    downloadBtn.disabled = false;
+  }
+};
+
 downloadBtn.onclick = () => {
-  if(!outputVideo) return;
+  if (!outputURL) return;
   const a = document.createElement('a');
-  a.href = outputVideo.src;
-  a.download = 'cutout_video.webm';
+  a.href = outputURL;
+  a.download = 'segmented_video.webm';
   a.click();
 };
 </script>
