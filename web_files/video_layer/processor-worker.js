@@ -1,34 +1,17 @@
-// processor-worker.js
-let FRAME_HISTORY = 2; // frames for feathering
-let history = [];
-
 self.onmessage = e => {
-    const msg = e.data;
-    if (msg.type === 'blend') {
-        const { width, height } = msg;
-        const frameData = new Uint8ClampedArray(msg.data);
+  const msg = e.data;
+  if(msg.type === 'frame'){
+    const { width, height } = msg;
+    const frame = new ImageData(new Uint8ClampedArray(msg.data), width, height);
 
-        // Feathering + smooth alpha
-        history.push(frameData);
-        if (history.length > FRAME_HISTORY) history.shift();
-
-        const blended = new Uint8ClampedArray(frameData.length);
-
-        for (let i = 0; i < frameData.length; i += 4) {
-            let r = 0, g = 0, b = 0, a = 0;
-            history.forEach(f => {
-                r += f[i];
-                g += f[i+1];
-                b += f[i+2];
-                a += f[i+3];
-            });
-            const count = history.length;
-            blended[i]   = r / count;
-            blended[i+1] = g / count;
-            blended[i+2] = b / count;
-            blended[i+3] = a / count;
-        }
-
-        self.postMessage({ type: 'frame', data: blended.buffer }, [blended.buffer]);
+    // Optional: Feathering / edge refinement
+    for(let i = 3; i < frame.data.length; i +=4){
+      // alpha smoothing could go here
+      frame.data[i] = frame.data[i]; // placeholder for more advanced operations
     }
+
+    self.postMessage(frame, [frame.data.buffer]);
+  } else if(msg.type === 'done'){
+    self.postMessage({type:'done'});
+  }
 };
