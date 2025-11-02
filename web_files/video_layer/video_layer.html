@@ -39,6 +39,7 @@ const status = document.getElementById('status');
 
 let workerDetector = null;
 let outputURL = null;
+let frameQueue = [];
 
 input.addEventListener('change', e => {
   const f = e.target.files[0]; 
@@ -61,27 +62,39 @@ startBtn.onclick = () => {
       status.textContent = 'Processing...';
       startBtn.disabled = true;
       video.play();
-      workerDetector.start();
+      requestAnimationFrame(processFrameLoop);
     });
   }
 };
 
-video.onended = async () => {
-  if (workerDetector) {
-    await workerDetector.stop();
-    status.textContent = 'Encoding final video...';
-    outputURL = await workerDetector.getVideo();
-    status.textContent = 'Processing complete! You can play or download the video.';
+async function processFrameLoop() {
+  if(video.paused || video.ended) return;
 
-    const finalVideo = document.createElement('video');
-    finalVideo.src = outputURL;
-    finalVideo.controls = true;
-    finalVideo.width = canvas.width;
-    finalVideo.height = canvas.height;
+  const bitmap = await createImageBitmap(video);
+  workerDetector.enqueueFrame(bitmap);
 
-    canvas.replaceWith(finalVideo);
-    downloadBtn.disabled = false;
+  const frameData = workerDetector.getProcessedFrame();
+  if(frameData){
+    ctx.putImageData(frameData,0,0);
+    frameQueue.push(frameData);
   }
+
+  requestAnimationFrame(processFrameLoop);
+}
+
+video.onended = async () => {
+  status.textContent = 'Encoding final video...';
+  outputURL = await workerDetector.finalizeVideo();
+  status.textContent = 'Processing complete! Play or download below.';
+
+  const finalVideo = document.createElement('video');
+  finalVideo.src = outputURL;
+  finalVideo.controls = true;
+  finalVideo.width = canvas.width;
+  finalVideo.height = canvas.height;
+
+  canvas.replaceWith(finalVideo);
+  downloadBtn.disabled = false;
 };
 
 downloadBtn.onclick = () => {
