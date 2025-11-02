@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>AI Video Cutout</title>
 <style>
 body {
@@ -39,7 +39,8 @@ const input = document.getElementById('videoInput');
 const downloadBtn = document.getElementById('downloadBtn');
 const status = document.getElementById('status');
 
-let processedFrames = [];
+let mediaRecorder;
+let recordedChunks = [];
 
 input.addEventListener('change', e => {
   const file = e.target.files[0];
@@ -50,45 +51,48 @@ input.addEventListener('change', e => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     status.textContent = 'Video loaded. Processing will start automatically.';
-    processedFrames = [];
+    recordedChunks = [];
     startProcessing();
   };
 });
 
 async function startProcessing() {
   downloadBtn.disabled = true;
-  await startVideoProcessing(video, canvas, ctx, (frame) => {
-    // Capture frames for download
-    const dataURL = canvas.toDataURL('image/webp', 0.9);
-    processedFrames.push(dataURL);
-  });
 
-  video.onended = () => {
-    status.textContent = 'Processing complete. Video ready for playback and download.';
+  // Capture canvas output as a MediaStream
+  const stream = canvas.captureStream(video.playbackRate * 30); // 30fps target
+  mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' });
+
+  mediaRecorder.ondataavailable = e => {
+    if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+  };
+
+  mediaRecorder.onstop = () => {
     downloadBtn.disabled = false;
+    status.textContent = 'Processing complete. Video ready for download.';
+  };
+
+  mediaRecorder.start();
+
+  await startVideoProcessing(video, canvas, ctx, null);
+
+  // Stop recording when the video ends
+  video.onended = () => {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    }
   };
 }
 
 downloadBtn.onclick = () => {
-  if (processedFrames.length === 0) return;
-
-  // Convert frames to a single webm using Whammy.js or similar
-  // For simplicity, here is a basic WebP frames zip approach
-  const zip = new JSZip();
-  processedFrames.forEach((frame, i) => zip.file(`frame_${i}.webp`, frame.split(',')[1], {base64:true}));
-  zip.generateAsync({type:"blob"}).then(content=>{
-    const url = URL.createObjectURL(content);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'processed_frames.zip';
-    a.click();
-  });
+  if (recordedChunks.length === 0) return;
+  const blob = new Blob(recordedChunks, { type: 'video/webm' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'processed_video.webm';
+  a.click();
 };
-
-// Load JSZip dynamically
-const script = document.createElement('script');
-script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
-document.body.appendChild(script);
 </script>
 </body>
 </html>
