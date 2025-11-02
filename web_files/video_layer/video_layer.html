@@ -2,28 +2,26 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>AI Video Cutout</title>
 <style>
-body { margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9;
+body {margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9;
   display:flex; flex-direction:column; align-items:center; padding:1em;}
-h1 { font-size:1.3em; margin-bottom:0.5em; text-align:center;}
-video,canvas { width:100%; max-width:640px; border-radius:12px; background:black; margin-bottom:1em; }
-#controls { display:flex; flex-wrap:wrap; gap:0.5em; justify-content:center; }
-button,input[type=file]{ background:#238636; color:white; border:none; padding:0.6em 1em; border-radius:8px; font-size:1em; cursor:pointer; }
-button:disabled{ background:#444c56; }
-#status{ font-size:0.9em; opacity:0.8; margin-top:0.5em; text-align:center; }
+h1 {font-size:1.4em; margin-bottom:0.5em;}
+video,canvas {width:100%; max-width:640px; border-radius:12px; background:black; margin-bottom:1em;}
+#controls {display:flex; flex-wrap:wrap; gap:0.5em; justify-content:center;}
+button,input[type=file]{background:#238636;color:white;border:none;padding:0.6em 1em;border-radius:8px;font-size:1em;cursor:pointer;}
+button:disabled{background:#444c56;}
+#status{font-size:0.9em;opacity:0.8;}
 </style>
 </head>
 <body>
-
 <h1>AI Background Cutout</h1>
 <div id="controls">
   <input type="file" id="videoInput" accept="video/*">
   <button id="startBtn" disabled>Start</button>
   <button id="downloadBtn" disabled>Download</button>
 </div>
-
 <video id="video" playsinline controls></video>
 <canvas id="canvas"></canvas>
 <p id="status">Waiting for video...</p>
@@ -38,87 +36,101 @@ const startBtn = document.getElementById('startBtn');
 const downloadBtn = document.getElementById('downloadBtn');
 const status = document.getElementById('status');
 
-let seg = null, mask = null, worker = null;
-let frames = [], running = false;
+let seg = null, mask = null, worker = null, mediaRecorder = null;
+let recordedChunks = [];
 
-// Initialize MediaPipe segmentation
 async function initSeg() {
-  seg = new SelfieSegmentation({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}` });
-  seg.setOptions({ modelSelection: 1 });
-  seg.onResults(r => { mask = r.segmentationMask; });
-  await seg.initialize();
+    seg = new SelfieSegmentation({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}` });
+    seg.setOptions({ modelSelection: 1 });
+    seg.onResults(results => mask = results.segmentationMask);
+    await seg.initialize();
 }
 initSeg();
 
-// Load video
 input.addEventListener('change', e => {
-  const file = e.target.files[0]; if(!file) return;
-  video.src = URL.createObjectURL(file);
-  video.onloadeddata = () => {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    startBtn.disabled = false;
-    status.textContent = 'Video ready. Press Start to process.';
-  };
+    const file = e.target.files[0];
+    if (!file) return;
+    video.src = URL.createObjectURL(file);
+    video.onloadeddata = () => {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        startBtn.disabled = false;
+        status.textContent = 'Ready to process.';
+    };
 });
 
-// Start processing
 startBtn.onclick = () => {
-  if(!seg) { status.textContent = 'Model loading...'; return; }
-  worker?.terminate();
-  worker = new Worker('processor-worker.js');
-  frames = []; running = true;
-  startBtn.disabled = true;
-  downloadBtn.disabled = true;
-  status.textContent = 'Processing...';
+    if (!seg) { status.textContent = 'Model loading...'; return; }
 
-  worker.onmessage = e => {
-    const msg = e.data;
-    if(msg.type === 'frame') {
-      const imgData = new ImageData(new Uint8ClampedArray(msg.data), canvas.width, canvas.height);
-      ctx.putImageData(imgData, 0, 0);
-      frames.push(canvas.toDataURL('image/webp',0.95));
-    } else if(msg.type === 'done') {
-      running = false;
-      downloadBtn.disabled = false;
-      status.textContent = 'Processing complete! You can play the video or download.';
-    }
-  };
+    // Setup worker
+    if (worker) worker.terminate();
+    worker = new Worker('processor-worker.js');
 
-  video.play().catch(()=>{});
-  processLoop();
+    recordedChunks = [];
+    const stream = canvas.captureStream(); // capture processed frames
+    mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' });
+
+    mediaRecorder.ondataavailable = e => {
+        if (e.data.size > 0) recordedChunks.push(e.data);
+    };
+    mediaRecorder.onstop = () => {
+        const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        video.src = url;
+        video.play();
+        downloadBtn.disabled = false;
+    };
+    mediaRecorder.start();
+
+    startBtn.disabled = true;
+    status.textContent = 'Processing video...';
+
+    video.play();
+    processLoop();
 };
 
-// Download final video
 downloadBtn.onclick = () => {
-  const blob = new Blob(frames.map(f => atob(f.split(',')[1]))
-    .map(s => Uint8Array.from(s, c=>c.charCodeAt(0))), { type: 'video/webp' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'segmented_video.webp'; a.click();
+    if (recordedChunks.length === 0) return;
+    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'segmented_video.webm';
+    a.click();
 };
 
-// Processing loop
 function processLoop() {
-  if(!running) return;
-  if(video.paused || video.ended) {
-    worker.postMessage({ type: 'finish' });
-    return;
-  }
-  seg.send({ image: video }).then(() => {
-    if(!mask) return requestAnimationFrame(processLoop);
+    if (video.paused || video.ended) {
+        mediaRecorder.stop();
+        status.textContent = 'Processing complete!';
+        return;
+    }
 
-    const off = new OffscreenCanvas(canvas.width, canvas.height);
-    const octx = off.getContext('2d');
-    octx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    octx.globalCompositeOperation = 'destination-in';
-    octx.drawImage(mask, 0, 0, canvas.width, canvas.height);
+    seg.send({ image: video }).then(() => {
+        if (!mask) return requestAnimationFrame(processLoop);
 
-    const frame = octx.getImageData(0, 0, canvas.width, canvas.height);
-    worker.postMessage({ type: 'frame', width: frame.width, height: frame.height, data: frame.data.buffer, mask: mask.data.buffer }, [frame.data.buffer, mask.data.buffer]);
+        const off = new OffscreenCanvas(canvas.width, canvas.height);
+        const octx = off.getContext('2d');
 
-    requestAnimationFrame(processLoop);
-  });
+        // Draw original video
+        octx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        // Apply mask
+        octx.globalCompositeOperation = 'destination-in';
+        octx.drawImage(mask, 0, 0, canvas.width, canvas.height);
+
+        const frameData = octx.getImageData(0, 0, canvas.width, canvas.height);
+        worker.postMessage({ type: 'blend', width: frameData.width, height: frameData.height, data: frameData.data.buffer }, [frameData.data.buffer]);
+
+        worker.onmessage = e => {
+            if (e.data.type === 'frame') {
+                const img = new ImageData(new Uint8ClampedArray(e.data.data), canvas.width, canvas.height);
+                ctx.putImageData(img, 0, 0);
+            }
+        };
+
+        requestAnimationFrame(processLoop);
+    });
 }
 </script>
 </body>
