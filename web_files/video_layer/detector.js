@@ -1,24 +1,14 @@
-
-/**
- * Detector.js
- * Handles segmentation, multi-frame blending, and mask refinement
- * Works with detector-worker.js for heavy processing
- */
-
 export class VideoDetector {
-  constructor(videoElement, canvasElement, featherSlider=null) {
-    this.video = videoElement;
-    this.canvas = canvasElement;
-    this.ctx = canvasElement.getContext('2d');
+  constructor(video, canvas, featherSlider=null) {
+    this.video = video;
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
     this.featherSlider = featherSlider;
-
     this.seg = null;
     this.mask = null;
     this.worker = null;
     this.running = false;
-    this.historyFrames = 3;
-
-    this.onFrameCallback = null; // Optional callback for preview
+    this.onFrameCallback = null;
   }
 
   async init(modelSelection=1) {
@@ -33,7 +23,6 @@ export class VideoDetector {
   start() {
     if (!this.seg) throw new Error("Segmentation model not initialized.");
     if (this.worker) this.worker.terminate();
-
     this.worker = new Worker('detector-worker.js');
     this.running = true;
 
@@ -51,7 +40,7 @@ export class VideoDetector {
 
   stop() {
     this.running = false;
-    if (this.worker) this.worker.terminate();
+    if(this.worker) this.worker.terminate();
     this.worker = null;
   }
 
@@ -67,17 +56,14 @@ export class VideoDetector {
     }
 
     this.seg.send({ image: this.video }).then(() => {
-      if (!this.mask) return requestAnimationFrame(() => this._loop());
-
+      if(!this.mask) return requestAnimationFrame(() => this._loop());
       const off = new OffscreenCanvas(this.canvas.width, this.canvas.height);
       const octx = off.getContext('2d');
-
-      // Draw video + apply mask
       octx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
       octx.globalCompositeOperation = 'destination-in';
       octx.drawImage(this.mask, 0, 0, this.canvas.width, this.canvas.height);
 
-      const frameData = octx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+      const frameData = octx.getImageData(0,0,this.canvas.width,this.canvas.height);
       const feather = this.featherSlider ? parseInt(this.featherSlider.value) : 5;
 
       this.worker.postMessage({
