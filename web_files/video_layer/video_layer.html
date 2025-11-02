@@ -55,7 +55,7 @@ input.addEventListener('change', e => {
 
 startBtn.onclick = () => {
   if (!workerDetector) {
-    workerDetector = new VideoDetectorWorker(video, canvas);
+    workerDetector = new VideoDetectorWorker(video, canvas, 5); // keep last 5 masks
     status.textContent = 'Initializing model...';
     workerDetector.init().then(() => {
       status.textContent = 'Processing...';
@@ -72,7 +72,7 @@ video.onended = async () => {
     status.textContent = 'Encoding final video...';
     outputURL = await workerDetector.getVideo();
     status.textContent = 'Processing complete! You can play or download the video.';
-    
+
     const finalVideo = document.createElement('video');
     finalVideo.src = outputURL;
     finalVideo.controls = true;
