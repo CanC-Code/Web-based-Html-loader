@@ -10,21 +10,18 @@ body {margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9;
 h1 {font-size:1.3em; margin-bottom:0.5em;}
 video,canvas {width:100%; max-width:640px; border-radius:12px; background:black; margin-bottom:1em;}
 #controls {display:flex; flex-wrap:wrap; gap:0.5em; justify-content:center;}
-button,input[type=file],input[type=range]{background:#238636;color:white;border:none;padding:0.6em 1em;border-radius:8px;font-size:1em;cursor:pointer;}
+button,input[type=file]{background:#238636;color:white;border:none;padding:0.6em 1em;border-radius:8px;font-size:1em;cursor:pointer;}
 button:disabled{background:#444c56;}
 #status{font-size:0.9em;opacity:0.8;}
-#featherLabel{margin-right:0.5em;}
 </style>
 </head>
 <body>
 
-<h1>AI Background Cutout</h1>
+<h1>AI Video Cutout</h1>
 <div id="controls">
   <input type="file" id="videoInput" accept="video/*">
   <button id="startBtn" disabled>Start</button>
   <button id="downloadBtn" disabled>Download</button>
-  <label id="featherLabel">Feather: <span id="featherValue">5</span></label>
-  <input type="range" id="featherSlider" min="0" max="20" value="5">
 </div>
 
 <video id="video" playsinline controls></video>
@@ -40,29 +37,24 @@ const canvas = document.getElementById('canvas');
 const videoInput = document.getElementById('videoInput');
 const startBtn = document.getElementById('startBtn');
 const downloadBtn = document.getElementById('downloadBtn');
-const featherSlider = document.getElementById('featherSlider');
-const featherValue = document.getElementById('featherValue');
 const status = document.getElementById('status');
 
-let frames = [];
 let detector = null;
+let frames = [];
+let outputVideo = null;
 
-featherSlider.addEventListener('input', e=>{
-  featherValue.textContent = e.target.value;
-  if(detector) detector.setFeather(e.target.value);
-});
-
-videoInput.addEventListener('change', async e=>{
+videoInput.addEventListener('change', async e => {
   const file = e.target.files[0];
   if(!file) return;
+
   video.src = URL.createObjectURL(file);
   video.onloadeddata = async () => {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     startBtn.disabled = false;
     status.textContent = 'Ready to process.';
-    detector = new VideoDetector(video, canvas, featherSlider);
-    await detector.init(1);
+    detector = new VideoDetector(video, canvas);
+    await detector.init();
   };
 });
 
@@ -71,25 +63,32 @@ startBtn.onclick = () => {
   frames = [];
   status.textContent = 'Processing...';
   downloadBtn.disabled = true;
+
   detector.onFrameCallback = (imgData) => {
-    frames.push(canvas.toDataURL('image/webp',0.8));
+    frames.push(canvas.toDataURL('image/webp',0.95));
   };
+
   detector.start();
 
-  video.onended = () => {
+  video.onended = async () => {
     detector.stop();
-    status.textContent = 'Processing finished.';
+    status.textContent = 'Processing finished. Generating playable video...';
+    outputVideo = document.createElement('video');
+    outputVideo.controls = true;
+    outputVideo.width = canvas.width;
+    outputVideo.src = await VideoDetector.framesToWebM(frames, canvas.width, canvas.height);
+    canvas.after(outputVideo);
     downloadBtn.disabled = false;
+    status.textContent = 'Ready. You can play or download the output.';
   };
 };
 
 downloadBtn.onclick = () => {
-  if(!frames.length) return;
-  const blob = new Blob(frames.map(f=>atob(f.split(',')[1]))
-    .map(s=>Uint8Array.from(s,c=>c.charCodeAt(0))), {type:'video/webp'});
-  const url = URL.createObjectURL(blob);
+  if(!outputVideo) return;
   const a = document.createElement('a');
-  a.href = url; a.download = 'cutout_video.webp'; a.click();
+  a.href = outputVideo.src;
+  a.download = 'cutout_video.webm';
+  a.click();
 };
 </script>
 </body>
