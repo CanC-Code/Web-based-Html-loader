@@ -1,19 +1,34 @@
-// Worker: apply mask to frame for perfect cutout
+// processor-worker.js
+let FRAME_HISTORY = 2; // frames for feathering
+let history = [];
+
 self.onmessage = e => {
-  const msg = e.data;
+    const msg = e.data;
+    if (msg.type === 'blend') {
+        const { width, height } = msg;
+        const frameData = new Uint8ClampedArray(msg.data);
 
-  if(msg.type === 'frame') {
-    const { width, height, data, mask } = msg;
-    const frame = new Uint8ClampedArray(data);
-    const alphaMask = new Uint8ClampedArray(mask);
+        // Feathering + smooth alpha
+        history.push(frameData);
+        if (history.length > FRAME_HISTORY) history.shift();
 
-    for(let i=0;i<frame.length;i+=4){
-      frame[i+3] = alphaMask[i]; // enforce alpha from mask
+        const blended = new Uint8ClampedArray(frameData.length);
+
+        for (let i = 0; i < frameData.length; i += 4) {
+            let r = 0, g = 0, b = 0, a = 0;
+            history.forEach(f => {
+                r += f[i];
+                g += f[i+1];
+                b += f[i+2];
+                a += f[i+3];
+            });
+            const count = history.length;
+            blended[i]   = r / count;
+            blended[i+1] = g / count;
+            blended[i+2] = b / count;
+            blended[i+3] = a / count;
+        }
+
+        self.postMessage({ type: 'frame', data: blended.buffer }, [blended.buffer]);
     }
-
-    postMessage({ type: 'frame', data: frame.buffer }, [frame.buffer]);
-
-  } else if(msg.type === 'finish') {
-    postMessage({ type: 'done' });
-  }
 };
