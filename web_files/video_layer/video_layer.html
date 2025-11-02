@@ -3,39 +3,35 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AI Video Layer Processor</title>
-<link rel="stylesheet" href="styles.css">
+<title>AI Video Cutout</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-
-<h1>AI Video Layer Processor</h1>
+<h1>AI Background Cutout</h1>
 
 <div id="controls">
   <input type="file" id="videoInput" accept="video/*">
+  <label for="modelSelect">Model:</label>
   <select id="modelSelect">
-    <option value="selfie">SelfieSegmentation</option>
-    <option value="bodypix">BodyPix (Full Body)</option>
+    <option value="0">General</option>
+    <option value="1">High Quality</option>
   </select>
-  <label>Feather: <input type="range" id="feather" min="0" max="20" value="4"></label>
+  <label for="feather">Feather:</label>
+  <input type="range" id="feather" min="0" max="50" value="10">
   <button id="startBtn" disabled>Start</button>
   <button id="stopBtn" disabled>Stop</button>
+  <button id="downloadBtn" disabled>Download</button>
 </div>
 
-<div id="previewContainer">
+<div id="videoWrapper">
   <video id="video" playsinline controls></video>
   <canvas id="canvas"></canvas>
 </div>
 
-<h2>Processed Output</h2>
-<div id="outputContainer"></div>
-
 <p id="status">Waiting for video...</p>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.8.0/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix"></script>
 <script src="detector.js"></script>
-
 <script>
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
@@ -43,25 +39,25 @@ const ctx = canvas.getContext('2d');
 const input = document.getElementById('videoInput');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const status = document.getElementById('status');
 const modelSelect = document.getElementById('modelSelect');
 const featherInput = document.getElementById('feather');
-const outputContainer = document.getElementById('outputContainer');
-const status = document.getElementById('status');
 
-let worker = null;
-let running = false;
-let frames = [];
-let feather = parseInt(featherInput.value);
-let detector = null;
+let seg=null, mask=null, worker=null, running=false, frames=[], feather=10;
 
-async function initDetector(model='selfie') {
-  detector = await Detector.init(model);
+// Initialize Segmentation
+async function initSeg(model=1){
+  seg = new SelfieSegmentation({locateFile: f=>`https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`});
+  seg.setOptions({modelSelection: model});
+  seg.onResults(r => { mask = r.segmentationMask; });
+  await seg.initialize();
 }
 
-initDetector();
-
+// Video input handler
 input.addEventListener('change', e=>{
-  const file = e.target.files[0]; if(!file) return;
+  const file = e.target.files[0];
+  if(!file) return;
   video.src = URL.createObjectURL(file);
   video.onloadeddata = ()=>{
     canvas.width = video.videoWidth;
@@ -71,106 +67,76 @@ input.addEventListener('change', e=>{
   };
 });
 
-featherInput.addEventListener('input', e => {
-  feather = parseInt(e.target.value);
+// Model selection
+modelSelect.addEventListener('change', ()=>{
+  initSeg(parseInt(modelSelect.value));
 });
 
-modelSelect.addEventListener('change', e => {
-  initDetector(modelSelect.value);
-});
+// Feathering
+featherInput.addEventListener('input', ()=>{ feather = parseInt(featherInput.value); });
 
-startBtn.onclick = () => {
-  if(!detector){status.textContent='Model loading...'; return;}
+// Start processing
+startBtn.onclick = ()=>{
+  if(!seg){ status.textContent='Model loading...'; return; }
   if(worker) worker.terminate();
-
   worker = new Worker('processor-worker.js');
-  running = true;
-  frames = [];
-  startBtn.disabled = true;
-  stopBtn.disabled = false;
-  outputContainer.innerHTML = '';
-  status.textContent = 'Processing...';
+  running = true; frames=[];
+  startBtn.disabled = true; stopBtn.disabled=false;
+  downloadBtn.disabled = true;
 
-  worker.onmessage = e => {
+  worker.onmessage = e=>{
     const msg = e.data;
     if(msg.type==='frame'){
       const img = new ImageData(new Uint8ClampedArray(msg.data), canvas.width, canvas.height);
-      ctx.putImageData(img, 0, 0);
+      ctx.putImageData(img,0,0);
       frames.push(canvas.toDataURL('image/webp',0.8));
-    } else if(msg.type==='done'){
-      running = false;
-      stopBtn.disabled = true;
-      createOutputVideo();
-      status.textContent = 'Processing complete.';
+    }else if(msg.type==='done'){
+      running=false; stopBtn.disabled=true; downloadBtn.disabled=false;
+      status.textContent='Processing done.';
     }
   };
 
-  video.play().catch(()=>{});
+  video.play();
   processLoop();
 };
 
-stopBtn.onclick = () => {
-  running = false;
-  stopBtn.disabled = true;
-  status.textContent='Stopped.';
-  createOutputVideo();
+// Stop processing
+stopBtn.onclick = ()=>{ running=false; stopBtn.disabled=true; downloadBtn.disabled=false; status.textContent='Stopped.'; };
+
+// Download video
+downloadBtn.onclick = ()=>{
+  // Convert frames to WebM (simplified)
+  const blob = new Blob(frames.map(f=>atob(f.split(',')[1]))
+    .map(s=>Uint8Array.from(s, c=>c.charCodeAt(0))), {type:'video/webp'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'segmented_video.webp'; a.click();
 };
 
-function createOutputVideo() {
-  if(frames.length===0) return;
-  const mediaStream = canvas.captureStream(30);
-  const recorder = new MediaRecorder(mediaStream);
-  let chunks = [];
-  recorder.ondataavailable = e => chunks.push(e.data);
-  recorder.onstop = () => {
-    const blob = new Blob(chunks, {type:'video/webm'});
-    const outVid = document.createElement('video');
-    outVid.controls = true;
-    outVid.src = URL.createObjectURL(blob);
-    outputContainer.appendChild(outVid);
-
-    const a = document.createElement('a');
-    a.href = outVid.src;
-    a.download = 'processed_video.webm';
-    a.textContent = 'Download Video';
-    outputContainer.appendChild(a);
-  };
-  recorder.start();
-  let frameIndex = 0;
-  function feedFrames(){
-    if(frameIndex>=frames.length){
-      recorder.stop();
-      return;
-    }
-    const img = new Image();
-    img.onload = ()=>{
-      ctx.clearRect(0,0,canvas.width,canvas.height);
-      ctx.drawImage(img,0,0,canvas.width,canvas.height);
-      requestAnimationFrame(feedFrames);
-    };
-    img.src = frames[frameIndex];
-    frameIndex++;
-  }
-  feedFrames();
-}
-
+// Frame processing loop
 function processLoop(){
   if(!running) return;
-  if(video.paused || video.ended){running=false; stopBtn.disabled=true; createOutputVideo(); return;}
-  detector.getMask(video).then(mask=>{
-    if(!mask){requestAnimationFrame(processLoop); return;}
+  if(video.paused || video.ended){ running=false; stopBtn.disabled=true; downloadBtn.disabled=false; return; }
+  seg.send({image:video}).then(()=>{
+    if(!mask) return requestAnimationFrame(processLoop);
+
     const off = new OffscreenCanvas(canvas.width,canvas.height);
     const octx = off.getContext('2d');
     octx.drawImage(video,0,0,canvas.width,canvas.height);
+
+    // Apply feathering
+    octx.globalAlpha = feather/50;
     octx.globalCompositeOperation='destination-in';
-    octx.filter=`blur(${feather}px)`;
     octx.drawImage(mask,0,0,canvas.width,canvas.height);
+
     const frame = octx.getImageData(0,0,canvas.width,canvas.height);
     worker.postMessage({type:'blend',width:frame.width,height:frame.height,data:frame.data.buffer},[frame.data.buffer]);
+
     requestAnimationFrame(processLoop);
   });
 }
-</script>
 
+initSeg();
+</script>
 </body>
 </html>
