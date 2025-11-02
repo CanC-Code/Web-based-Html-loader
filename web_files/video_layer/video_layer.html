@@ -1,403 +1,108 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>AI Video — Frame-accurate Cutout & Export</title>
-<link rel="stylesheet" href="style.css" />
+<title>AI Video Cutout</title>
 <style>
-/* Minimal embedded styling for drop-in */
-:root{--bg:#0d1117;--panel:#161b22;--muted:#8b949e;--accent:#58a6ff;--btn:#238636;--text:#c9d1d9}
-html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Arial;padding:12px;box-sizing:border-box}
-.container{max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
-.header{display:flex;flex-direction:column;align-items:center}
-.header h1{margin:0;font-size:1.1rem;color:var(--accent)}
-.controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;padding:10px;background:var(--panel);border-radius:10px}
-.controls > *{margin:2px}
-button,input,select{padding:8px 12px;border-radius:8px;border:none;background:var(--btn);color:white;font-weight:600;cursor:pointer}
-button:disabled{opacity:0.5;cursor:not-allowed}
-video,canvas{width:100%;max-width:900px;border-radius:10px;background:#000;display:block;margin:0 auto}
-.status{font-size:0.9rem;color:var(--muted);text-align:center}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:center}
-.previewWrap{display:flex;flex-direction:column;gap:6px;align-items:center}
-.outputPlayer{width:100%;max-width:640px;border-radius:8px}
-@media(min-width:800px){.layout{display:flex;gap:12px}.left{flex:1}.right{width:360px}}
+body {margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9;
+  display:flex; flex-direction:column; align-items:center; padding:1em;}
+h1 {font-size:1.3em; margin-bottom:0.5em;}
+video,canvas {width:100%; max-width:640px; border-radius:12px; background:black; margin-bottom:1em;}
+#controls {display:flex; flex-wrap:wrap; gap:0.5em; justify-content:center;}
+button,input[type=file]{background:#238636;color:white;border:none;padding:0.6em 1em;border-radius:8px;font-size:1em;cursor:pointer;}
+button:disabled{background:#444c56;}
+#status{font-size:0.9em;opacity:0.8;}
 </style>
 </head>
 <body>
-<div class="container">
-  <div class="header">
-    <h1>AI Frame-Accurate Cutout</h1>
-    <div class="status" id="status">Load a video (local) to begin.</div>
-  </div>
-
-  <div class="controls" aria-label="controls">
-    <input id="videoInput" type="file" accept="video/*" />
-    <select id="effectSelect" title="Effect">
-      <option value="bgRemove">Background removal (alpha)</option>
-      <option value="bgBlur">Background blur</option>
-      <option value="objectExclude">Object exclusion</option>
-    </select>
-
-    <label style="display:flex;align-items:center;gap:8px;color:var(--muted)">
-      <span style="font-size:0.9rem">Quality</span>
-      <select id="qualitySelect" title="Quality (mask resolution)">
-        <option value="1">Full</option>
-        <option value="0.75">75%</option>
-        <option value="0.5">50%</option>
-        <option value="0.25">25%</option>
-      </select>
-    </label>
-
-    <button id="processBtn" disabled>Process (frame-accurate)</button>
-    <button id="previewBtn" disabled>Preview Output</button>
-    <button id="downloadBtn" disabled>Download</button>
-  </div>
-
-  <div class="layout" style="margin-top:10px">
-    <div class="left">
-      <video id="sourceVideo" controls playsinline style="max-height:480px"></video>
-      <canvas id="workCanvas" style="display:none"></canvas>
-      <canvas id="displayCanvas"></canvas>
-    </div>
-
-    <div class="right">
-      <div style="background:var(--panel);padding:10px;border-radius:10px">
-        <div style="font-weight:700;margin-bottom:6px">Output Preview</div>
-        <video id="outputPlayer" class="outputPlayer" controls></video>
-        <div style="margin-top:8px;font-size:0.85rem;color:var(--muted)">Use Preview to play/pause/export processed result.</div>
-      </div>
-    </div>
-  </div>
+<h1>AI Background Cutout</h1>
+<div id="controls">
+  <input type="file" id="videoInput" accept="video/*">
+  <button id="startBtn" disabled>Start</button>
+  <button id="stopBtn" disabled>Stop</button>
+  <button id="downloadBtn" disabled>Download</button>
 </div>
+<video id="video" playsinline controls></video>
+<canvas id="canvas"></canvas>
+<p id="status">Waiting for video...</p>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
 <script>
-/*
-Frame-accurate processing pipeline:
+const video=document.getElementById('video');
+const canvas=document.getElementById('canvas');
+const ctx=canvas.getContext('2d');
+const input=document.getElementById('videoInput');
+const startBtn=document.getElementById('startBtn');
+const stopBtn=document.getElementById('stopBtn');
+const downloadBtn=document.getElementById('downloadBtn');
+const status=document.getElementById('status');
 
-1) Load video and estimate fps (by sampling requestVideoFrameCallback).
-2) Pause video.
-3) For each frame index i from 0..totalFrames-1:
-     - seek video.currentTime = i / fps, await 'seeked' event
-     - draw frame to offscreen canvas (workCanvas)
-     - send canvas image to MediaPipe (segmentation) and await mask
-     - send ImageData + mask to processor worker and await processed ImageBitmap
-     - store processed ImageBitmap in array
-4) After all frames processed, replay stored frames into displayCanvas at fps while recording via MediaRecorder to produce final WebM blob.
-5) Set outputPlayer.src = URL.createObjectURL(blob) so user can play/pause/watch before downloading.
+let seg=null,mask=null,worker=null,running=false,frames=[];
 
-Notes:
-- This is CPU intensive; for long videos use lower Quality/Res.
-- Processing is sequential and guarantees 1:1 frame mapping.
-*/
-
-const videoInput = document.getElementById('videoInput');
-const sourceVideo = document.getElementById('sourceVideo');
-const workCanvas = document.getElementById('workCanvas'); // hidden canvas for capture/seek
-const displayCanvas = document.getElementById('displayCanvas'); // shows processed frames during processing
-const outputPlayer = document.getElementById('outputPlayer');
-
-const status = document.getElementById('status');
-const processBtn = document.getElementById('processBtn');
-const previewBtn = document.getElementById('previewBtn');
-const downloadBtn = document.getElementById('downloadBtn');
-const effectSelect = document.getElementById('effectSelect');
-const qualitySelect = document.getElementById('qualitySelect');
-
-let seg = null; // MediaPipe instance in main thread
-let processorWorker = null;
-let storedFrames = []; // array of ImageBitmap
-let estimatedFPS = 30; // fallback
-let totalFrames = 0;
-let durationSec = 0;
-
-videoInput.addEventListener('change', async (ev) => {
-  const file = ev.target.files[0];
-  if (!file) return;
-  const url = URL.createObjectURL(file);
-  sourceVideo.src = url;
-  sourceVideo.load();
-  sourceVideo.onloadedmetadata = () => {
-    durationSec = sourceVideo.duration;
-    workCanvas.width = sourceVideo.videoWidth;
-    workCanvas.height = sourceVideo.videoHeight;
-    displayCanvas.width = sourceVideo.videoWidth;
-    displayCanvas.height = sourceVideo.videoHeight;
-    displayCanvas.style.maxHeight = '480px';
-    status.textContent = `Loaded: ${file.name} — ${sourceVideo.videoWidth}×${sourceVideo.videoHeight}`;
-    processBtn.disabled = false;
-    previewBtn.disabled = true;
-    downloadBtn.disabled = true;
-    storedFrames = [];
-  };
-});
-
-// initialize MediaPipe segmentation in main thread
-async function initSegmentation() {
-  if (seg) return;
-  seg = new SelfieSegmentation({
-    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
-  });
-  seg.setOptions({ modelSelection: 1, selfieMode: true });
-  seg.onResults(() => {}); // placeholder — we will call send() and await results via onResultsPromise
+async function initSeg(){
+  seg=new SelfieSegmentation({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`});
+  seg.setOptions({modelSelection:1});
+  seg.onResults(r=>{mask=r.segmentationMask;});
   await seg.initialize();
 }
+initSeg();
 
-// helper: run segmentation on an ImageBitmap or canvas element and return mask ImageBitmap
-function runSegmentationFromCanvas(canvasOrImage) {
-  return new Promise((resolve, reject) => {
-    // patch seg.onResults temporarily to capture the mask for this call
-    const onR = (results) => {
-      // results.segmentationMask is a CanvasImageSource (image/canvas)
-      seg.onResults = originalOnResults; // restore
-      resolve(results.segmentationMask);
-    };
-    const originalOnResults = seg.onResults;
-    seg.onResults = onR;
-    try {
-      seg.send({ image: canvasOrImage }).catch(err => {
-        seg.onResults = originalOnResults;
-        reject(err);
-      });
-    } catch (err) {
-      seg.onResults = originalOnResults;
-      reject(err);
-    }
-  });
-}
-
-// estimate FPS by sampling requestVideoFrameCallback for two frames
-async function estimateFPS() {
-  return new Promise((resolve) => {
-    let times = [];
-    const handler = (now, metadata) => {
-      times.push(metadata.presentedFrames || metadata.expectedDisplayTime || now);
-      if (times.length >= 2) {
-        const dt = (metadata.presentedFrames !== undefined) ?
-                   (metadata.mediaTime ? 1 : (now - times[0])) : (now - times[0]);
-      }
-      if (times.length >= 3) {
-        // compute diffs between presentation times
-        const deltas = [];
-        for (let i=1;i<times.length;i++) deltas.push(times[i] - times[i-1]);
-        // average delta in ms
-        const avgMs = deltas.reduce((a,b)=>a+b,0)/deltas.length;
-        const fps = Math.round(1000/avgMs) || 30;
-        sourceVideo.pause();
-        sourceVideo.removeEventListener('loadeddata', null);
-        resolve(fps);
-      } else {
-        sourceVideo.requestVideoFrameCallback(handler);
-      }
-    };
-    // Use time-based fallback sampling: play briefly
-    const onPlay = () => {
-      sourceVideo.requestVideoFrameCallback(handler);
-    };
-    sourceVideo.play().then(onPlay).catch(() => {
-      // if play blocked, fallback to 30 fps
-      resolve(30);
-    });
-  });
-}
-
-// seek-based frame extractor: ensures precise frame capture
-function seekTo(timeSec) {
-  return new Promise((resolve, reject) => {
-    const onSeeked = () => {
-      sourceVideo.removeEventListener('seeked', onSeeked);
-      resolve();
-    };
-    sourceVideo.addEventListener('seeked', onSeeked);
-    sourceVideo.currentTime = Math.min(timeSec, Math.max(0, sourceVideo.duration - 0.0001));
-  });
-}
-
-// process frames sequentially
-async function processAllFrames() {
-  await initSegmentation();
-  // Estimate FPS intelligently
-  status.textContent = 'Estimating frame rate...';
-  try {
-    // Some browsers may not allow auto play; fallback to stored estimate
-    estimatedFPS = await estimateFPS();
-  } catch (err) {
-    estimatedFPS = 30;
-  }
-  if (!estimatedFPS || estimatedFPS < 1) estimatedFPS = 30;
-  totalFrames = Math.ceil(durationSec * estimatedFPS);
-  status.textContent = `Processing ${totalFrames} frames @ ${estimatedFPS} fps — this may take a while.`;
-
-  // Prepare worker
-  if (processorWorker) processorWorker.terminate();
-  processorWorker = new Worker('processor-worker.js');
-
-  // Promise wrapper for worker responses
-  const processFrameWithWorker = (imageData, maskArray, effect) => {
-    return new Promise((resolve, reject) => {
-      const id = Math.random().toString(36).slice(2,9);
-      const handler = (ev) => {
-        const d = ev.data;
-        if (d && d.type === 'processed' && d.id === id) {
-          processorWorker.removeEventListener('message', handler);
-          // d.data is transferred ArrayBuffer for ImageData.data
-          const buf = new Uint8ClampedArray(d.data);
-          const img = new ImageData(buf, imageData.width, imageData.height);
-          // convert ImageData to ImageBitmap for efficient storage
-          createImageBitmap(img).then(bitmap => resolve(bitmap)).catch(reject);
-        } else if (d && d.type === 'error' && d.id === id) {
-          processorWorker.removeEventListener('message', handler);
-          reject(new Error(d.message || 'processing error'));
-        }
-      };
-      processorWorker.addEventListener('message', handler);
-
-      // send framedata and mask as transferable buffers
-      try {
-        processorWorker.postMessage({
-          type: 'process',
-          id,
-          width: imageData.width,
-          height: imageData.height,
-          frameBuffer: imageData.data.buffer,
-          maskBuffer: maskArray.buffer,
-          effect: effect
-        }, [imageData.data.buffer, maskArray.buffer]);
-      } catch (err) {
-        // if transfer fails, try without transfer
-        processorWorker.postMessage({
-          type: 'process',
-          id,
-          width: imageData.width,
-          height: imageData.height,
-          frameBuffer: imageData.data.buffer,
-          maskBuffer: maskArray.buffer,
-          effect: effect
-        });
-      }
-    });
+input.addEventListener('change',e=>{
+  const f=e.target.files[0]; if(!f)return;
+  video.src=URL.createObjectURL(f);
+  video.onloadeddata=()=>{
+    canvas.width=video.videoWidth;
+    canvas.height=video.videoHeight;
+    startBtn.disabled=false;
+    status.textContent='Ready to process.';
   };
+});
 
-  storedFrames = [];
-  const workCtx = workCanvas.getContext('2d');
-
-  for (let i=0;i<totalFrames;i++) {
-    const t = i / estimatedFPS;
-    await seekTo(t);
-    // Draw frame into workCanvas
-    workCtx.drawImage(sourceVideo, 0, 0, workCanvas.width, workCanvas.height);
-    const imageData = workCtx.getImageData(0,0,workCanvas.width, workCanvas.height);
-
-    // Run segmentation on the current canvas: use seg.send with canvas element
-    // We will create a Promise wrapper to await seg.onResults
-    const maskImage = await runSegmentationFromCanvas(workCanvas); // returns an image/canvas
-    // extract mask pixels to Uint8ClampedArray (single channel)
-    // Draw mask into an offscreen canvas and read pixels
-    const maskCanvas = new OffscreenCanvas(workCanvas.width, workCanvas.height);
-    const maskCtx = maskCanvas.getContext('2d');
-    maskCtx.drawImage(maskImage, 0, 0, workCanvas.width, workCanvas.height);
-    const maskDataRGBA = maskCtx.getImageData(0,0,workCanvas.width, workCanvas.height).data;
-    const maskArray = new Uint8ClampedArray(workCanvas.width * workCanvas.height);
-    for (let p=0, q=0; p<maskDataRGBA.length; p+=4, q++) {
-      maskArray[q] = maskDataRGBA[p]; // red channel
+startBtn.onclick=()=>{
+  if(!seg){status.textContent='Model loading...';return;}
+  if(worker)worker.terminate();
+  worker=new Worker('processor-worker.js');
+  running=true;frames=[];
+  startBtn.disabled=true;stopBtn.disabled=false;
+  worker.onmessage=e=>{
+    const msg=e.data;
+    if(msg.type==='frame'){
+      const img=new ImageData(new Uint8ClampedArray(msg.data),canvas.width,canvas.height);
+      ctx.putImageData(img,0,0);
+      frames.push(canvas.toDataURL('image/webp',0.8));
+    }else if(msg.type==='done'){
+      running=false;stopBtn.disabled=true;downloadBtn.disabled=false;
+      status.textContent='Processing done.';
     }
+  };
+  video.play();
+  loop();
+};
 
-    // send to worker for processing (apply effect)
-    const effect = effectSelect.value;
-    status.textContent = `Processing frame ${i+1}/${totalFrames}...`;
-    try {
-      const processedBitmap = await processFrameWithWorker(imageData, maskArray, effect);
-      storedFrames.push(processedBitmap);
-      // draw a small preview to displayCanvas
-      const dctx = displayCanvas.getContext('2d');
-      dctx.drawImage(processedBitmap, 0, 0, displayCanvas.width, displayCanvas.height);
-    } catch (err) {
-      console.error('Frame processing error', err);
-      status.textContent = 'Error processing frame: ' + err.message;
-      processorWorker.terminate();
-      return;
-    }
-  }
+stopBtn.onclick=()=>{running=false;stopBtn.disabled=true;downloadBtn.disabled=false;status.textContent='Stopped.';};
 
-  // finished processing
-  status.textContent = 'All frames processed. Preparing export...';
-  // Now create webm by replaying stored frames into a canvas with MediaRecorder
-  const exportBlob = await encodeFramesToWebM(storedFrames, estimatedFPS, displayCanvas.width, displayCanvas.height);
-  const url = URL.createObjectURL(exportBlob);
-  outputPlayer.src = url;
-  previewBtn.disabled = false;
-  downloadBtn.disabled = false;
+downloadBtn.onclick=()=>{
+  const blob=new Blob(frames.map(f=>atob(f.split(',')[1])).map(s=>Uint8Array.from(s,c=>c.charCodeAt(0))),{type:'video/webp'});
+  const url=URL.createObjectURL(blob);const a=document.createElement('a');
+  a.href=url;a.download='segmented_video.webp';a.click();
+};
 
-  // cleanup worker
-  processorWorker.terminate();
-  processorWorker = null;
-  status.textContent = 'Ready. Preview and download available.';
-}
-
-// helper: take stored ImageBitmaps and record them into a WebM blob by drawing them to an offscreen canvas at correct fps
-async function encodeFramesToWebM(bitmaps, fps, w, h) {
-  return new Promise((resolve, reject) => {
-    const exportCanvas = document.createElement('canvas');
-    exportCanvas.width = w;
-    exportCanvas.height = h;
-    const expCtx = exportCanvas.getContext('2d');
-
-    const stream = exportCanvas.captureStream(fps);
-    let recorder;
-    let chunks = [];
-
-    try {
-      recorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' });
-    } catch (err) {
-      try { recorder = new MediaRecorder(stream); } catch (e) { reject(e); return; }
-    }
-
-    recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
-    recorder.onstop = () => {
-      const blob = new Blob(chunks, { type: 'video/webm' });
-      resolve(blob);
-    };
-
-    recorder.start(100); // collect every 100ms
-
-    // draw frames at fixed interval and stop when done
-    let i = 0;
-    const frameMs = 1000 / fps;
-    const drawNext = () => {
-      if (i >= bitmaps.length) {
-        // stop after slight delay to flush recording
-        setTimeout(()=>recorder.stop(), 200);
-        return;
-      }
-      expCtx.clearRect(0,0,w,h);
-      expCtx.drawImage(bitmaps[i], 0, 0, w, h);
-      i++;
-      setTimeout(drawNext, frameMs);
-    };
-    // start
-    drawNext();
+function loop(){
+  if(!running)return;
+  if(video.paused||video.ended){requestAnimationFrame(loop);return;}
+  seg.send({image:video}).then(()=>{
+    if(!mask)return requestAnimationFrame(loop);
+    const off=new OffscreenCanvas(canvas.width,canvas.height);
+    const octx=off.getContext('2d');
+    octx.drawImage(video,0,0,canvas.width,canvas.height);
+    octx.globalCompositeOperation='destination-in';
+    octx.drawImage(mask,0,0,canvas.width,canvas.height);
+    const frame=octx.getImageData(0,0,canvas.width,canvas.height);
+    worker.postMessage({type:'blend',width:frame.width,height:frame.height,data:frame.data.buffer},[frame.data.buffer]);
+    requestAnimationFrame(loop);
   });
 }
-
-// wire buttons
-processBtn.addEventListener('click', async () => {
-  processBtn.disabled = true;
-  await processAllFrames();
-  processBtn.disabled = false;
-});
-previewBtn.addEventListener('click', () => {
-  if (outputPlayer.src) {
-    outputPlayer.play().catch(()=>{});
-  }
-});
-downloadBtn.addEventListener('click', () => {
-  if (!outputPlayer.src) return;
-  const a = document.createElement('a');
-  a.href = outputPlayer.src;
-  a.download = 'processed_video.webm';
-  a.click();
-});
 </script>
 </body>
 </html>
