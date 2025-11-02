@@ -1,70 +1,72 @@
 // detector.js
+export async function startVideoProcessing(video, canvas, ctx, frameCallback) {
+  const worker = new Worker('detector-worker.js');
+  const FRAME_HISTORY = 3;
+  let history = [];
 
-let segModel = null;
-let worker = null;
-
-// Initialize segmentation model
-export async function initSegmentationModel() {
-  if (segModel) return segModel;
-
-  segModel = new SelfieSegmentation({
+  // Load MediaPipe SelfieSegmentation
+  const seg = new SelfieSegmentation({
     locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`
   });
+  seg.setOptions({ modelSelection: 1 });
+  await seg.initialize();
 
-  segModel.setOptions({
-    modelSelection: 1, // Default full body
+  seg.onResults(results => {
+    if (!results.segmentationMask) return;
+
+    const maskCanvas = new OffscreenCanvas(canvas.width, canvas.height);
+    const maskCtx = maskCanvas.getContext('2d');
+    maskCtx.drawImage(results.segmentationMask, 0, 0, canvas.width, canvas.height);
+
+    const maskData = maskCtx.getImageData(0, 0, canvas.width, canvas.height);
+
+    // Store history
+    history.push(maskData.data);
+    if (history.length > FRAME_HISTORY) history.shift();
+
+    // Merge history for temporal AA
+    const blended = new Uint8ClampedArray(maskData.data.length);
+    for (let i = 0; i < maskData.data.length; i += 4) {
+      let r = 0, g = 0, b = 0, a = 0;
+      history.forEach(f => { r += f[i]; g += f[i+1]; b += f[i+2]; a += f[i+3]; });
+      const count = history.length;
+      blended[i] = r / count;
+      blended[i+1] = g / count;
+      blended[i+2] = b / count;
+      blended[i+3] = a / count;
+    }
+
+    // Send frame + blended mask to worker
+    const offCanvas = new OffscreenCanvas(canvas.width, canvas.height);
+    const offCtx = offCanvas.getContext('2d');
+    offCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const frame = offCtx.getImageData(0, 0, canvas.width, canvas.height);
+
+    worker.postMessage({
+      type: 'process',
+      width: frame.width,
+      height: frame.height,
+      frameData: frame.data.buffer,
+      maskData: blended.buffer
+    }, [frame.data.buffer, blended.buffer]);
   });
-
-  await segModel.initialize();
-
-  return segModel;
-}
-
-// Process a video frame
-export async function processFrame(videoElement, width, height) {
-  if (!segModel) throw new Error("Segmentation model not initialized");
-
-  return new Promise((resolve) => {
-    segModel.onResults(results => {
-      resolve(results.segmentationMask);
-    });
-    segModel.send({ image: videoElement });
-  });
-}
-
-// Start processing loop
-export async function startVideoProcessing(videoElement, canvas, ctx, onFrameCallback) {
-  await initSegmentationModel();
-
-  if (worker) worker.terminate();
-  worker = new Worker('processor-worker.js');
 
   worker.onmessage = e => {
     const msg = e.data;
     if (msg.type === 'frame') {
       const img = new ImageData(new Uint8ClampedArray(msg.data), canvas.width, canvas.height);
       ctx.putImageData(img, 0, 0);
-      if (onFrameCallback) onFrameCallback(img);
+      if (frameCallback) frameCallback(img);
     }
   };
 
-  const loop = async () => {
-    if (videoElement.paused || videoElement.ended) {
-      worker.postMessage({ type: 'done' });
-      return;
+  // Main loop
+  function processLoop() {
+    if (!video.paused && !video.ended) {
+      seg.send({ image: video }).catch(() => {});
+      video.requestVideoFrameCallback(processLoop);
     }
-    const mask = await processFrame(videoElement, canvas.width, canvas.height);
-    if (mask) {
-      const off = new OffscreenCanvas(canvas.width, canvas.height);
-      const octx = off.getContext('2d');
-      octx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-      octx.globalCompositeOperation = 'destination-in';
-      octx.drawImage(mask, 0, 0, canvas.width, canvas.height);
-      const frame = octx.getImageData(0, 0, canvas.width, canvas.height);
-      worker.postMessage({ type: 'blend', width: frame.width, height: frame.height, data: frame.data.buffer }, [frame.data.buffer]);
-    }
-    videoElement.requestVideoFrameCallback(loop);
-  };
+  }
 
-  videoElement.requestVideoFrameCallback(loop);
+  video.requestVideoFrameCallback(processLoop);
 }
