@@ -1,72 +1,94 @@
-// detector.js
-export async function startVideoProcessing(video, canvas, ctx, frameCallback) {
-  const worker = new Worker('detector-worker.js');
-  const FRAME_HISTORY = 3;
-  let history = [];
 
-  // Load MediaPipe SelfieSegmentation
-  const seg = new SelfieSegmentation({
-    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`
-  });
-  seg.setOptions({ modelSelection: 1 });
-  await seg.initialize();
+/**
+ * Detector.js
+ * Handles segmentation, multi-frame blending, and mask refinement
+ * Works with detector-worker.js for heavy processing
+ */
 
-  seg.onResults(results => {
-    if (!results.segmentationMask) return;
+export class VideoDetector {
+  constructor(videoElement, canvasElement, featherSlider=null) {
+    this.video = videoElement;
+    this.canvas = canvasElement;
+    this.ctx = canvasElement.getContext('2d');
+    this.featherSlider = featherSlider;
 
-    const maskCanvas = new OffscreenCanvas(canvas.width, canvas.height);
-    const maskCtx = maskCanvas.getContext('2d');
-    maskCtx.drawImage(results.segmentationMask, 0, 0, canvas.width, canvas.height);
+    this.seg = null;
+    this.mask = null;
+    this.worker = null;
+    this.running = false;
+    this.historyFrames = 3;
 
-    const maskData = maskCtx.getImageData(0, 0, canvas.width, canvas.height);
-
-    // Store history
-    history.push(maskData.data);
-    if (history.length > FRAME_HISTORY) history.shift();
-
-    // Merge history for temporal AA
-    const blended = new Uint8ClampedArray(maskData.data.length);
-    for (let i = 0; i < maskData.data.length; i += 4) {
-      let r = 0, g = 0, b = 0, a = 0;
-      history.forEach(f => { r += f[i]; g += f[i+1]; b += f[i+2]; a += f[i+3]; });
-      const count = history.length;
-      blended[i] = r / count;
-      blended[i+1] = g / count;
-      blended[i+2] = b / count;
-      blended[i+3] = a / count;
-    }
-
-    // Send frame + blended mask to worker
-    const offCanvas = new OffscreenCanvas(canvas.width, canvas.height);
-    const offCtx = offCanvas.getContext('2d');
-    offCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const frame = offCtx.getImageData(0, 0, canvas.width, canvas.height);
-
-    worker.postMessage({
-      type: 'process',
-      width: frame.width,
-      height: frame.height,
-      frameData: frame.data.buffer,
-      maskData: blended.buffer
-    }, [frame.data.buffer, blended.buffer]);
-  });
-
-  worker.onmessage = e => {
-    const msg = e.data;
-    if (msg.type === 'frame') {
-      const img = new ImageData(new Uint8ClampedArray(msg.data), canvas.width, canvas.height);
-      ctx.putImageData(img, 0, 0);
-      if (frameCallback) frameCallback(img);
-    }
-  };
-
-  // Main loop
-  function processLoop() {
-    if (!video.paused && !video.ended) {
-      seg.send({ image: video }).catch(() => {});
-      video.requestVideoFrameCallback(processLoop);
-    }
+    this.onFrameCallback = null; // Optional callback for preview
   }
 
-  video.requestVideoFrameCallback(processLoop);
+  async init(modelSelection=1) {
+    this.seg = new SelfieSegmentation({
+      locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`
+    });
+    this.seg.setOptions({ modelSelection });
+    this.seg.onResults(r => this.mask = r.segmentationMask);
+    await this.seg.initialize();
+  }
+
+  start() {
+    if (!this.seg) throw new Error("Segmentation model not initialized.");
+    if (this.worker) this.worker.terminate();
+
+    this.worker = new Worker('detector-worker.js');
+    this.running = true;
+
+    this.worker.onmessage = e => {
+      const msg = e.data;
+      if (msg.type === 'frame') {
+        const imgData = new ImageData(new Uint8ClampedArray(msg.data), this.canvas.width, this.canvas.height);
+        this.ctx.putImageData(imgData, 0, 0);
+        if (this.onFrameCallback) this.onFrameCallback(imgData);
+      }
+    };
+
+    this._loop();
+  }
+
+  stop() {
+    this.running = false;
+    if (this.worker) this.worker.terminate();
+    this.worker = null;
+  }
+
+  setFeather(value) {
+    if (this.featherSlider) this.featherSlider.value = value;
+  }
+
+  _loop() {
+    if (!this.running) return;
+    if (this.video.paused || this.video.ended) {
+      requestAnimationFrame(() => this._loop());
+      return;
+    }
+
+    this.seg.send({ image: this.video }).then(() => {
+      if (!this.mask) return requestAnimationFrame(() => this._loop());
+
+      const off = new OffscreenCanvas(this.canvas.width, this.canvas.height);
+      const octx = off.getContext('2d');
+
+      // Draw video + apply mask
+      octx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
+      octx.globalCompositeOperation = 'destination-in';
+      octx.drawImage(this.mask, 0, 0, this.canvas.width, this.canvas.height);
+
+      const frameData = octx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+      const feather = this.featherSlider ? parseInt(this.featherSlider.value) : 5;
+
+      this.worker.postMessage({
+        type: 'blend',
+        width: frameData.width,
+        height: frameData.height,
+        data: frameData.data.buffer,
+        feather
+      }, [frameData.data.buffer]);
+
+      requestAnimationFrame(() => this._loop());
+    });
+  }
 }
