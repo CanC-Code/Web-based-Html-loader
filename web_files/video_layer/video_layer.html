@@ -5,12 +5,28 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>AI Video Cutout</title>
 <style>
-body {margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9;
-  display:flex; flex-direction:column; align-items:center; padding:1em;}
+body {
+  margin:0;
+  font-family:Arial,sans-serif;
+  background:#0d1117;
+  color:#c9d1d9;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  padding:1em;
+}
 h1 {font-size:1.3em; margin-bottom:0.5em;}
 video,canvas {width:100%; max-width:640px; border-radius:12px; background:black; margin-bottom:1em;}
 #controls {display:flex; flex-wrap:wrap; gap:0.5em; justify-content:center;}
-button,input[type=file]{background:#238636;color:white;border:none;padding:0.6em 1em;border-radius:8px;font-size:1em;cursor:pointer;}
+button,input[type=file]{
+  background:#238636;
+  color:white;
+  border:none;
+  padding:0.6em 1em;
+  border-radius:8px;
+  font-size:1em;
+  cursor:pointer;
+}
 button:disabled{background:#444c56;}
 #status{font-size:0.9em;opacity:0.8;}
 </style>
@@ -38,7 +54,7 @@ const stopBtn=document.getElementById('stopBtn');
 const downloadBtn=document.getElementById('downloadBtn');
 const status=document.getElementById('status');
 
-let seg=null,mask=null,worker=null,running=false,frames=[];
+let seg=null,mask=null,worker=null,running=false,mediaRecorder=null,recordedChunks=[];
 
 async function initSeg(){
   seg=new SelfieSegmentation({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`});
@@ -63,36 +79,66 @@ startBtn.onclick=()=>{
   if(!seg){status.textContent='Model loading...';return;}
   if(worker)worker.terminate();
   worker=new Worker('processor-worker.js');
-  running=true;frames=[];
-  startBtn.disabled=true;stopBtn.disabled=false;
+  running=true;
+  recordedChunks=[];
+  startBtn.disabled=true;stopBtn.disabled=false;downloadBtn.disabled=true;
+  status.textContent='Processing started...';
+
+  // Prepare to record the canvas output
+  const stream=canvas.captureStream(30);
+  mediaRecorder=new MediaRecorder(stream,{mimeType:'video/webm; codecs=vp9'});
+  mediaRecorder.ondataavailable=e=>{if(e.data.size>0)recordedChunks.push(e.data);};
+  mediaRecorder.onstop=()=>{downloadBtn.disabled=false;};
+  mediaRecorder.start();
+
   worker.onmessage=e=>{
     const msg=e.data;
     if(msg.type==='frame'){
       const img=new ImageData(new Uint8ClampedArray(msg.data),canvas.width,canvas.height);
       ctx.putImageData(img,0,0);
-      frames.push(canvas.toDataURL('image/webp',0.8));
     }else if(msg.type==='done'){
-      running=false;stopBtn.disabled=true;downloadBtn.disabled=false;
+      stopProcessing();
       status.textContent='Processing done.';
     }
   };
+
+  video.currentTime=0;
   video.play();
-  loop();
+  renderLoop();
 };
 
-stopBtn.onclick=()=>{running=false;stopBtn.disabled=true;downloadBtn.disabled=false;status.textContent='Stopped.';};
+stopBtn.onclick=()=>{
+  stopProcessing();
+  status.textContent='Stopped.';
+};
 
 downloadBtn.onclick=()=>{
-  const blob=new Blob(frames.map(f=>atob(f.split(',')[1])).map(s=>Uint8Array.from(s,c=>c.charCodeAt(0))),{type:'video/webp'});
-  const url=URL.createObjectURL(blob);const a=document.createElement('a');
-  a.href=url;a.download='segmented_video.webp';a.click();
+  const blob=new Blob(recordedChunks,{type:'video/webm'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download='segmented_output.webm';
+  a.click();
 };
 
-function loop(){
+function stopProcessing(){
+  running=false;
+  stopBtn.disabled=true;
+  if(mediaRecorder && mediaRecorder.state!=='inactive'){
+    mediaRecorder.stop();
+  }
+}
+
+function renderLoop(){
   if(!running)return;
-  if(video.paused||video.ended){requestAnimationFrame(loop);return;}
+  if(video.paused||video.ended){
+    stopProcessing();
+    status.textContent='Video ended.';
+    return;
+  }
+
   seg.send({image:video}).then(()=>{
-    if(!mask)return requestAnimationFrame(loop);
+    if(!mask){requestAnimationFrame(renderLoop);return;}
     const off=new OffscreenCanvas(canvas.width,canvas.height);
     const octx=off.getContext('2d');
     octx.drawImage(video,0,0,canvas.width,canvas.height);
@@ -100,7 +146,7 @@ function loop(){
     octx.drawImage(mask,0,0,canvas.width,canvas.height);
     const frame=octx.getImageData(0,0,canvas.width,canvas.height);
     worker.postMessage({type:'blend',width:frame.width,height:frame.height,data:frame.data.buffer},[frame.data.buffer]);
-    requestAnimationFrame(loop);
+    requestAnimationFrame(renderLoop);
   });
 }
 </script>
