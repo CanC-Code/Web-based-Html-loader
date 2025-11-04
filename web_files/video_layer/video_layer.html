@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>AI Video Cutout</title>
+<title>AI Video Cutout — Enhanced</title>
 <style>
 body {margin:0; font-family:Arial,sans-serif; background:#0d1117; color:#c9d1d9;
   display:flex; flex-direction:column; align-items:center; padding:1em;}
@@ -12,114 +12,190 @@ video,canvas {width:100%; max-width:640px; border-radius:12px; background:black;
 #controls {display:flex; flex-wrap:wrap; gap:0.5em; justify-content:center;}
 button,input[type=file]{background:#238636;color:white;border:none;padding:0.6em 1em;border-radius:8px;font-size:1em;cursor:pointer;}
 button:disabled{background:#444c56;}
-#status{font-size:0.9em;opacity:0.8;}
+#status{font-size:0.9em;opacity:0.9;margin-top:0.5em;}
 </style>
 </head>
 <body>
-<h1>AI Background Cutout</h1>
+<h1>AI Background Cutout — Enhanced</h1>
 <div id="controls">
   <input type="file" id="videoInput" accept="video/*">
   <button id="startBtn" disabled>Start</button>
   <button id="downloadBtn" disabled>Download</button>
 </div>
-<video id="video" playsinline controls></video>
+<video id="video" controls playsinline style="display:none"></video>
 <canvas id="canvas"></canvas>
-<p id="status">Waiting for video...</p>
+<div id="status">idle</div>
 
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
 <script>
-const video = document.getElementById('video');
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
 const input = document.getElementById('videoInput');
 const startBtn = document.getElementById('startBtn');
 const downloadBtn = document.getElementById('downloadBtn');
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
 const status = document.getElementById('status');
 
-let seg = null, mask = null, worker = null, running = false;
-let mediaRecorder, recordedChunks = [];
+let seg = null, mask = null, detectorWorker = null, running = false;
+let mediaRecorder, recordedChunks = [], captureStreamFPS = 30;
+let lastProcessedFrameId = -1;
+let pendingMasks = new Map();
 
 async function initSeg() {
+  // initialize MediaPipe SelfieSegmentation in main thread (same as before)
   seg = new SelfieSegmentation({
     locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${f}`
   });
   seg.setOptions({ modelSelection: 1 });
   seg.onResults(r => { mask = r.segmentationMask; });
   await seg.initialize();
+  status.textContent = 'Segmentation initialized';
 }
 initSeg();
 
 input.addEventListener('change', e => {
-  const f = e.target.files[0]; if(!f) return;
-  video.src = URL.createObjectURL(f);
-  video.onloadeddata = () => {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    startBtn.disabled = false;
-    status.textContent = 'Ready to process.';
-  };
+  const f = e.target.files[0];
+  if(!f) return;
+  const url = URL.createObjectURL(f);
+  video.src = url;
+  video.style.display = 'block';
+  startBtn.disabled = false;
+  status.textContent = 'video loaded';
 });
 
-startBtn.onclick = () => {
-  if(!seg) { status.textContent='Model loading...'; return; }
-  if(worker) worker.terminate();
-  worker = new Worker('processor-worker.js');
-  running = true;
+startBtn.addEventListener('click', async () => {
+  if(!video.src) return;
   startBtn.disabled = true;
-  downloadBtn.disabled = true;
-  recordedChunks = [];
+  await video.play();
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
 
-  // Capture canvas stream for proper video recording
-  const stream = canvas.captureStream(video.frameRate || 30);
-  mediaRecorder = new MediaRecorder(stream, { mimeType:'video/webm; codecs=vp9' });
-  mediaRecorder.ondataavailable = e => { if(e.data.size>0) recordedChunks.push(e.data); };
-  mediaRecorder.onstop = () => { downloadBtn.disabled=false; status.textContent='Processing done.'; };
-  mediaRecorder.start();
-
-  worker.onmessage = e => {
-    const frame = new ImageData(new Uint8ClampedArray(e.data), canvas.width, canvas.height);
-    ctx.putImageData(frame,0,0);
+  // create detector worker for mask smoothing
+  detectorWorker = new Worker('detector-worker.js');
+  detectorWorker.postMessage({ type:'init', width:canvas.width, height:canvas.height });
+  detectorWorker.onmessage = e => {
+    const m = e.data;
+    if(m.type === 'mask') {
+      const buf = new Uint8ClampedArray(m.buffer);
+      const imageData = new ImageData(buf, m.width, m.height);
+      // create ImageBitmap for fast drawing
+      createImageBitmap(imageData).then(bitmap => {
+        // store processed mask by frameId
+        pendingMasks.set(m.frameId, bitmap);
+      });
+    }
   };
 
-  video.currentTime = 0;
-  video.play();
-  processLoop();
-};
+  // start MediaRecorder with explicit fps matching estimated video fps
+  captureStreamFPS = Math.max(24, Math.round(getVideoFPSEstimate(video) || 30));
+  status.textContent = `processing @ ${captureStreamFPS} fps`;
 
-downloadBtn.onclick = () => {
-  const blob = new Blob(recordedChunks, { type:'video/webm' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'segmented_video.webm';
-  a.click();
-};
+  const stream = canvas.captureStream(captureStreamFPS);
+  mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
+  mediaRecorder.ondataavailable = ev => { if(ev.data.size) recordedChunks.push(ev.data); };
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    downloadBtn.disabled = false;
+    downloadBtn.onclick = () => { const a=document.createElement('a'); a.href=url; a.download='cutout.webm'; a.click(); };
+    status.textContent = 'recording complete';
+  };
+  recordedChunks = [];
+  mediaRecorder.start();
 
-function processLoop() {
+  running = true;
+  // start processing using requestVideoFrameCallback when available
+  if (video.requestVideoFrameCallback) {
+    const cb = (now, metadata) => {
+      if(!running) return;
+      processFrame(metadata.presentationTime || now);
+      video.requestVideoFrameCallback(cb);
+    };
+    video.requestVideoFrameCallback(cb);
+  } else {
+    // fallback timing using setInterval at captureStreamFPS
+    const interval = Math.round(1000 / captureStreamFPS);
+    const tick = () => { if(running) processFrame(performance.now()); };
+    setInterval(tick, interval);
+  }
+
+  status.textContent = 'running';
+});
+
+downloadBtn.addEventListener('click', () => {});
+
+function getVideoFPSEstimate(v) {
+  // Try to estimate fps from video properties; fall back to 30
+  if(v.getVideoPlaybackQuality) {
+    try {
+      const q = v.getVideoPlaybackQuality();
+      if(q.totalVideoFrames && q.totalFrameDelay) {
+        // crude estimate
+        return Math.round(q.totalVideoFrames / (v.duration || 1));
+      }
+    } catch(e){}
+  }
+  return 30;
+}
+
+let frameCounter = 0;
+async function processFrame(presentationTime) {
   if(!running || video.paused || video.ended) {
-    if(video.ended) {
+    if(video.ended && mediaRecorder && mediaRecorder.state !== 'inactive') {
       running = false;
       mediaRecorder.stop();
     }
-    requestAnimationFrame(processLoop);
     return;
   }
 
-  seg.send({ image: video }).then(() => {
-    if(!mask) return requestAnimationFrame(processLoop);
+  // run segmentation (updates global mask via seg.onResults callback)
+  await seg.send({ image: video });
 
+  if(!mask) return;
+
+  // draw mask to a small temporary canvas to get pixel data
+  const tmp = new OffscreenCanvas(mask.width, mask.height);
+  const tctx = tmp.getContext('2d');
+  tctx.drawImage(mask, 0, 0, tmp.width, tmp.height);
+  const maskData = tctx.getImageData(0,0,tmp.width,tmp.height);
+
+  // send mask for temporal smoothing
+  const frameId = frameCounter++;
+  detectorWorker.postMessage({ type:'mask', frameId, width:maskData.width, height:maskData.height, data:maskData.data.buffer }, [maskData.data.buffer]);
+
+  // check if processed mask available for this frame
+  const processed = pendingMasks.get(frameId);
+  if(processed) {
+    // composite video + processed mask into output canvas
     const off = new OffscreenCanvas(canvas.width, canvas.height);
-    const octx = off.getContext('2d');
+    const octx = off.getContext('2d', { alpha:true });
+    // draw current video frame
+    octx.drawImage(video,0,0,canvas.width,canvas.height);
+    // destination-in with mask: scale mask to canvas size
+    octx.globalCompositeOperation = 'destination-in';
+    octx.drawImage(processed, 0, 0, canvas.width, canvas.height);
+    octx.globalCompositeOperation = 'source-over';
+    // present to onscreen canvas
+    const mainCtx = canvas.getContext('2d');
+    mainCtx.clearRect(0,0,canvas.width,canvas.height);
+    mainCtx.drawImage(off,0,0);
+
+    // cleanup
+    processed.close && processed.close();
+    pendingMasks.delete(frameId);
+    lastProcessedFrameId = frameId;
+  } else {
+    // if no processed mask yet, draw passthrough with original mask (less smooth)
+    const off = new OffscreenCanvas(canvas.width, canvas.height);
+    const octx = off.getContext('2d', { alpha:true });
     octx.drawImage(video,0,0,canvas.width,canvas.height);
     octx.globalCompositeOperation = 'destination-in';
     octx.drawImage(mask,0,0,canvas.width,canvas.height);
-
-    const frame = octx.getImageData(0,0,canvas.width,canvas.height);
-    worker.postMessage({ type:'frame', width:frame.width, height:frame.height, data:frame.data.buffer }, [frame.data.buffer]);
-
-    requestAnimationFrame(processLoop);
-  });
+    const mainCtx = canvas.getContext('2d');
+    mainCtx.clearRect(0,0,canvas.width,canvas.height);
+    mainCtx.drawImage(off,0,0);
+  }
 }
+
 </script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
 </body>
 </html>
